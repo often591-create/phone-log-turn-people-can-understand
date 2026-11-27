@@ -1,0 +1,15 @@
+# 零件代號對照表（App 有網路時會自動下載最新版；和 App 內建的表一起用，這裡的優先）
+# 每行用 TAB 隔開：
+#   cam	感光元件型號開頭	說明
+#   soc	處理器代號	名稱
+#   amp	喇叭/震動晶片型號(部分)	說明
+#   panel	品牌	螢幕代號	廠商
+cam	OVX8000	5000 萬畫素 · 1/1.55 吋（REDMI K80 至尊版主鏡頭）
+cam	OV08F	800 萬畫素 · 1/4 吋
+cam	OV20B	2000 萬畫素 · 1/2 吋
+panel	xiaomi	36	天馬
+panel	xiaomi	37	深超光電
+panel	xiaomi	38	三星顯示
+panel	xiaomi	41	維信諾
+panel	xiaomi	42	華星光電
+panel	xiaomi	43	JDI

@@ -170,6 +170,103 @@ const char *camera_maker(const char *name)
     return "";
 }
 
+/* ================= 線上資料庫（data/parts.tsv、data/devices.txt） =================
+   App 有網路時會下載最新版，沒有就用內建的那份；這裡的資料優先於程式裡寫死的表 */
+char g_datadir[1000] = "data";
+struct DbPart { char kind[8]; char key[48]; char key2[48]; char val[200]; };
+struct DbPart dbp[1500];
+int dbp_n = 0, db_loaded = 0;
+char g_device[64] = "";
+
+/* 沒收錄的型號：最後寫進 unknown.txt，App 會讓使用者回報 */
+char unk[60][120];
+int unk_n = 0;
+
+void add_unknown(const char *kind, const char *key)
+{
+    int i;
+    char t[120];
+    if (key == NULL || key[0] == '\0') return;
+    snprintf(t, sizeof(t), "%s\t%s", kind, key);
+    for (i = 0; i < unk_n; i++) if (strcmp(unk[i], t) == 0) return;
+    if (unk_n < 60) strcpy(unk[unk_n++], t);
+}
+
+/* 比對用：轉大寫、只留英文和數字 */
+void db_norm(const char *s, char *out, int size)
+{
+    int j = 0;
+    for (; *s && j < size - 1; s++) {
+        if (isalnum((unsigned char)*s)) out[j++] = (char)toupper((unsigned char)*s);
+    }
+    out[j] = '\0';
+}
+
+void db_load(void)
+{
+    char path[1100], line[512], *f[4], *p;
+    int n;
+    FILE *in;
+    if (db_loaded) return;
+    db_loaded = 1;
+    snprintf(path, sizeof(path), "%s%sparts.tsv", g_datadir, SEP);
+    in = fopen(path, "r");
+    if (in == NULL) return;
+    while (fgets(line, sizeof(line), in) != NULL && dbp_n < 1500) {
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        line[strcspn(line, "\r\n")] = '\0';
+        n = 0; p = line;
+        f[n++] = p;
+        while (n < 4 && (p = strchr(p, '\t')) != NULL) { *p++ = '\0'; f[n++] = p; }
+        if (n < 3) continue;
+        strncpy(dbp[dbp_n].kind, f[0], 7); dbp[dbp_n].kind[7] = '\0';
+        strncpy(dbp[dbp_n].key, f[1], 47); dbp[dbp_n].key[47] = '\0';
+        if (n == 4) {
+            strncpy(dbp[dbp_n].key2, f[2], 47); dbp[dbp_n].key2[47] = '\0';
+            strncpy(dbp[dbp_n].val, f[3], 199);
+        } else {
+            dbp[dbp_n].key2[0] = '\0';
+            strncpy(dbp[dbp_n].val, f[2], 199);
+        }
+        dbp[dbp_n].val[199] = '\0';
+        dbp_n++;
+    }
+    fclose(in);
+}
+
+/* mode 0：完全一樣；1：型號以表裡的開頭；2：型號裡含有表裡的字（都不分大小寫、不管符號） */
+const char *db_part(const char *kind, const char *key, int mode)
+{
+    char a[64], b[64];
+    int i;
+    db_load();
+    db_norm(key, a, sizeof(a));
+    if (a[0] == '\0') return NULL;
+    for (i = 0; i < dbp_n; i++) {
+        if (strcmp(dbp[i].kind, kind) != 0) continue;
+        db_norm(dbp[i].key, b, sizeof(b));
+        if (b[0] == '\0') continue;
+        if ((mode == 0 && strcmp(a, b) == 0) || (mode == 1 && starts_with(a, b)) || (mode == 2 && strstr(a, b) != NULL))
+            return dbp[i].val;
+    }
+    return NULL;
+}
+
+/* 螢幕代號：panel<TAB>品牌<TAB>代號<TAB>廠商 */
+const char *db_panel(const char *brand, const char *code)
+{
+    char a[64], b[64];
+    int i;
+    db_load();
+    db_norm(code, a, sizeof(a));
+    for (i = 0; i < dbp_n; i++) {
+        if (strcmp(dbp[i].kind, "panel") != 0 || strcmp(dbp[i].key, brand) != 0) continue;
+        db_norm(dbp[i].key2, b, sizeof(b));
+        if (strcmp(a, b) == 0) return dbp[i].val;
+    }
+    return NULL;
+}
+
 /* ================= 內建零件資料庫（不用上網） ================= */
 
 /* 處理器代號 → 名稱（高通、聯發科、三星） */
@@ -190,6 +287,8 @@ const char *soc_db[][2] = {
 const char *soc_name(const char *soc)
 {
     int i, n = sizeof(soc_db) / sizeof(soc_db[0]);
+    const char *d = db_part("soc", soc, 0);
+    if (d != NULL) return d;
     for (i = 0; i < n; i++) if (strcmp(soc, soc_db[i][0]) == 0) return soc_db[i][1];
     return "";
 }
@@ -233,6 +332,10 @@ const char *camera_spec(const char *name)
     }
     for (i = 0; name[i] && j < 31; i++) if (name[i] != '-') k[j++] = (char)toupper((unsigned char)name[i]);
     k[j] = '\0';
+    {
+        const char *d = db_part("cam", k, 1);
+        if (d != NULL) return d;
+    }
     for (i = 0; i < n; i++) if (starts_with(k, cam_db[i][0])) return cam_db[i][1];
     return NULL;
 }
@@ -256,6 +359,10 @@ const char *amp_desc(const char *chip)
     int i, n = sizeof(amp_db) / sizeof(amp_db[0]);
     for (i = 0; chip[i] && i < 31; i++) k[i] = (char)toupper((unsigned char)chip[i]);
     k[i] = '\0';
+    {
+        const char *d = db_part("amp", k, 2);
+        if (d != NULL) return d;
+    }
     for (i = 0; i < n; i++) if (strstr(k, amp_db[i][0]) != NULL) return amp_db[i][1];
     return NULL;
 }
@@ -799,7 +906,11 @@ void xiaomi_finish(void)
 
     /* 螢幕面板 */
     if (xm_panel_code >= 0) {
-        n = lookup(xm_panel_code, panel_code, panel_name, panel_n);
+        char code[16];
+        sprintf(code, "%d", xm_panel_code);
+        n = db_panel("xiaomi", code);
+        if (n == NULL) n = lookup(xm_panel_code, panel_code, panel_name, panel_n);
+        if (n == NULL) { char t[40]; sprintf(t, "xiaomi\t%d", xm_panel_code); add_unknown("panel", t); }
         if (n != NULL) sprintf(g_panel_text, "%s (面板編號 %d)", n, xm_panel_code);
         else           sprintf(g_panel_text, "未知 (面板編號 %d)", xm_panel_code);
     }
@@ -1446,7 +1557,19 @@ void oppo_finish(void)
     if (g_ngz > 0 && gz[g_ngz - 1].t - gz[0].t < 600) g_ngz = 0;
 
     /* 螢幕面板：報告裡只有代號，沒有寫廠商 */
-    if (op_panel[0]) sprintf(g_panel_text, "面板代號 %s (報告裡沒有寫廠商)", op_panel);
+    if (op_panel[0]) {
+        /* 代號最後一段是廠商編號，例如 ac180_p_3_a0020 → A0020 */
+        const char *code = strrchr(op_panel, '_'), *v;
+        code = (code != NULL) ? code + 1 : op_panel;
+        v = db_panel("oppo", code);
+        if (v != NULL) snprintf(g_panel_text, sizeof(g_panel_text), "%s (面板代號 %s)", v, op_panel);
+        else {
+            char t[80];
+            snprintf(g_panel_text, sizeof(g_panel_text), "面板代號 %s (資料庫還沒有這個代號)", op_panel);
+            snprintf(t, sizeof(t), "oppo\t%s", code);
+            add_unknown("panel", t);
+        }
+    }
 }
 
 /* ---------------- zip 裡的其他檔案（目前沒有找到 OPPO 專用的） ---------------- */
@@ -1560,7 +1683,16 @@ void vivo_finish(void)
     }
 
     /* 螢幕面板：報告裡只有代號，沒有寫廠商 */
-    if (vv_panel[0]) sprintf(g_panel_text, "面板代號 %s (報告裡沒有寫廠商)", vv_panel);
+    if (vv_panel[0]) {
+        const char *v = db_panel("vivo", vv_panel);
+        if (v != NULL) snprintf(g_panel_text, sizeof(g_panel_text), "%s (面板代號 %s)", v, vv_panel);
+        else {
+            char t[100];
+            snprintf(g_panel_text, sizeof(g_panel_text), "面板代號 %s (資料庫還沒有這個代號)", vv_panel);
+            snprintf(t, sizeof(t), "vivo\t%s", vv_panel);
+            add_unknown("panel", t);
+        }
+    }
 
     /* 凍結紀錄不到 10 分鐘的話，算出來的比例沒有意義，就不顯示 */
     if (g_ngz > 0 && gz[g_ngz - 1].t - gz[0].t < 600) g_ngz = 0;
@@ -2974,6 +3106,7 @@ long read_file(const char *path)
             get_prop(line, "ro.product.manufacturer", g_maker, sizeof(g_maker));
             get_prop(line, "ro.product.marketname", g_model, sizeof(g_model));
             get_prop(line, "ro.product.model", g_model_code, sizeof(g_model_code));
+            get_prop(line, "ro.product.device", g_device, sizeof(g_device));
             get_prop(line, "ro.build.version.release", g_android, sizeof(g_android));
             get_prop(line, "ro.build.version.security_patch", g_patch, sizeof(g_patch));
             get_prop(line, "ro.boot.verifiedbootstate", g_verified, sizeof(g_verified));
@@ -3516,12 +3649,62 @@ void page_cpu(void)
     ex_cpu_more();
 }
 
+/* 官方規格頁：從 data/devices.txt 找這款手機 */
+void page_official(void)
+{
+    char path[1100], line[600], keys[3][64], a[64], *p, *q, *tab;
+    int found = 0, k;
+    FILE *in;
+    printf("\n=========== 官方規格 ===========\n");
+    db_norm(g_model, keys[0], 64);
+    db_norm(g_model_code, keys[1], 64);
+    db_norm(g_device, keys[2], 64);
+    snprintf(path, sizeof(path), "%s%sdevices.txt", g_datadir, SEP);
+    in = fopen(path, "r");
+    if (in != NULL) {
+        while (fgets(line, sizeof(line), in) != NULL) {
+            line[strcspn(line, "\r\n")] = '\0';
+            if (line[0] == '@') {
+                if (found) break;               /* 下一款了 */
+                p = line + 1;
+                while (p != NULL && !found) {
+                    q = strchr(p, '|');
+                    if (q != NULL) *q = '\0';
+                    db_norm(p, a, sizeof(a));
+                    for (k = 0; k < 3; k++) if (a[0] && strcmp(a, keys[k]) == 0) found = 1;
+                    p = (q != NULL) ? q + 1 : NULL;
+                }
+                continue;
+            }
+            if (!found || line[0] == '#' || line[0] == '\0') continue;
+            tab = strchr(line, '\t');
+            if (tab == NULL) { printf(" %s\n", line); continue; }
+            *tab = '\0';
+            printf(" %s：%s\n", line, tab + 1);
+        }
+        fclose(in);
+    }
+    if (found) {
+        note("官方規格來自網路上的公開資料，和你這台實際用的零件可能有小差異（例如不同批次用不同廠商）");
+        note("「等效 23 mm」是換算成傳統相機的焦段，數字越小拍得越廣；光圈 f 後面的數字越小，進光越多");
+    } else {
+        printf(" 資料庫還沒收錄這款手機：%s %s\n", or_none(g_model), g_model_code);
+        note("可以按畫面上方的「回報」按鈕，資料庫會自動上網查好規格補上，之後打開 App 就看得到");
+        {
+            char t[200];
+            snprintf(t, sizeof(t), "%s | %s | %s", g_model, g_model_code, g_device);
+            add_unknown("device", t);
+        }
+    }
+}
+
 void page_parts(void)
 {
     const char *n;
     int i;
     printf("\n========= 零件與規格 =========\n");
     printf(" 處理器     %s %s %s\n", g_soc_maker, or_none(g_soc), soc_name(g_soc));
+    if (g_soc[0] && soc_name(g_soc)[0] == '\0') add_unknown("soc", g_soc);
     printf(" 圖形晶片   %s\n", or_none(g_gpu));
 
     n = lookup(g_dram_code, dram_code, dram_name, dram_n);
@@ -3551,7 +3734,10 @@ void page_parts(void)
         const char *sp = camera_spec(g_cams[i]);
         printf(" %s %s %s\n", i == 0 ? "鏡頭      " : "          ", camera_maker(g_cams[i]), g_cams[i]);
         if (sp != NULL) printf("              → %s\n", sp);
-        else            printf("              → 內建對照表沒有這個型號\n");
+        else {
+            printf("              → 資料庫還沒有這個型號\n");
+            add_unknown("cam", g_cams[i]);
+        }
     }
 
     for (i = 0; i < g_ncharger; i++) {
@@ -3906,6 +4092,7 @@ void ex_amp_line(void)
         if (n >= 2) printf(" 喇叭放大器 %s%s%s x %d\n", maker, maker[0] ? " " : "", xa_chip, n);
         else        printf(" 喇叭放大器 %s%s%s\n", maker, maker[0] ? " " : "", xa_chip);
         d = amp_desc(xa_chip);
+        if (d == NULL) add_unknown("amp", xa_chip);
     } else if (g_amp[0]) {
         const char *maker = "";
         if (starts_with(g_amp, "cs")) maker = "Cirrus Logic";
@@ -3913,12 +4100,14 @@ void ex_amp_line(void)
         else if (starts_with(g_amp, "tfa")) maker = "NXP";
         printf(" 喇叭放大器 %s %s\n", maker, g_amp);
         d = amp_desc(g_amp);
+        if (d == NULL) add_unknown("amp", g_amp);
     }
     if (d != NULL) printf("              → %s\n", d);
     if (n >= 2) printf(" 喇叭       %d 個（每個喇叭一顆放大器）→ 立體聲\n", n);
     if (xa_haptic[0]) {
         printf(" 震動馬達   %s\n", xa_haptic);
         if ((d = amp_desc(xa_haptic)) != NULL) printf("              → %s\n", d);
+        else add_unknown("amp", xa_haptic);
     }
     if (xa_chip[0] || g_amp[0])
         note("報告裡只有放大器晶片的型號，喇叭本身的大小、瓦數沒有記錄；放大器數量通常等於喇叭數量");
@@ -4601,7 +4790,7 @@ int main()
         else if (choice == 1) page_overview();
         else if (choice == 2) page_system();
         else if (choice == 3) page_cpu();
-        else if (choice == 4) page_parts();
+        else if (choice == 4) { page_parts(); page_official(); }
         else if (choice == 5) page_memory();
         else if (choice == 6) page_storage();
         else if (choice == 7) page_battery();
@@ -4728,6 +4917,14 @@ Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jp
     strncpy(g_outdir, s, sizeof(g_outdir) - 1); g_outdir[sizeof(g_outdir) - 1] = '\0';
     (*env)->ReleaseStringUTFChars(env, jout, s);
 
+    /* 規格資料庫放在 out 資料夾旁邊的 data 資料夾（App 會先準備好） */
+    strcpy(g_datadir, g_outdir);
+    {
+        char *slash = strrchr(g_datadir, '/');
+        if (slash != NULL) strcpy(slash + 1, "data");
+        else strcpy(g_datadir, "data");
+    }
+
     print_to("log.txt");
     ok = run_analysis(path);
     if (!ok) { fflush(stdout); return 0; }
@@ -4739,6 +4936,7 @@ Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jp
     printf("%s\t%s\t%d\n", "安全檢查", status(11), 1);
     printf("%s\t%s\t%d\n", "處理器與螢幕", status(1), 1);
     printf("%s\t%s\t%d\n", "零件與規格", "", 1);
+    printf("%s\t%s\t%d\n", "官方規格", "", 1);
     printf("%s\t%s\t%d\n", "記憶體", status(2), 1);
     printf("%s\t%s\t%d\n", "儲存空間", status(3), 1);
     printf("%s\t%s\t%d\n", "電池", status(4), 1);
@@ -4778,29 +4976,34 @@ Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jp
     print_to("p3.txt"); page_security();
     print_to("p4.txt"); page_cpu();
     print_to("p5.txt"); page_parts();
-    print_to("p6.txt"); page_memory();
-    print_to("p7.txt"); page_storage();
-    print_to("p8.txt"); page_battery();
-    print_to("p9.txt"); page_charge();
-    print_to("p10.txt"); page_power();
-    print_to("p11.txt"); page_thermal();
-    print_to("p12.txt"); page_network();
-    print_to("p13.txt"); page_bluetooth();
-    print_to("p14.txt"); page_gnss();
-    print_to("p15.txt"); page_sensors();
-    print_to("p16.txt"); page_audio();
-    print_to("p17.txt"); page_apps();
-    print_to("p18.txt"); page_usage();
-    print_to("p19.txt"); page_perm();
-    print_to("p20.txt"); page_notify();
-    print_to("p21.txt"); page_settings();
-    print_to("p22.txt"); page_perf();
-    print_to("p23.txt"); page_freeze();
-    print_to("p24.txt"); page_stability();
-    print_to("p25.txt"); page_errors();
-    print_to("p26.txt"); page_history();
-    print_to("p27.txt"); page_advanced();
-    print_to("p28.txt"); page_raw_summary();
+    print_to("p6.txt"); page_official();
+    print_to("p7.txt"); page_memory();
+    print_to("p8.txt"); page_storage();
+    print_to("p9.txt"); page_battery();
+    print_to("p10.txt"); page_charge();
+    print_to("p11.txt"); page_power();
+    print_to("p12.txt"); page_thermal();
+    print_to("p13.txt"); page_network();
+    print_to("p14.txt"); page_bluetooth();
+    print_to("p15.txt"); page_gnss();
+    print_to("p16.txt"); page_sensors();
+    print_to("p17.txt"); page_audio();
+    print_to("p18.txt"); page_apps();
+    print_to("p19.txt"); page_usage();
+    print_to("p20.txt"); page_perm();
+    print_to("p21.txt"); page_notify();
+    print_to("p22.txt"); page_settings();
+    print_to("p23.txt"); page_perf();
+    print_to("p24.txt"); page_freeze();
+    print_to("p25.txt"); page_stability();
+    print_to("p26.txt"); page_errors();
+    print_to("p27.txt"); page_history();
+    print_to("p28.txt"); page_advanced();
+    print_to("p29.txt"); page_raw_summary();
+
+    /* 資料庫還沒收錄的型號（App 用來讓使用者回報） */
+    print_to("unknown.txt");
+    for (i = 0; i < unk_n; i++) printf("%s\n", unk[i]);
     fflush(stdout);
     return 1;
 }

@@ -147,6 +147,7 @@ class ReportActivity : AppCompatActivity() {
         Thread(null, {
             out.deleteRecursively()
             out.mkdirs()
+            DataSync.prepare(applicationContext)     // 規格資料庫放到 C 程式找得到的地方
             val ok = analyze(path, out.path) == 1
             done = ok
             runOnUiThread {
@@ -212,6 +213,16 @@ class ReportActivity : AppCompatActivity() {
         head.textSize = 16f
         head.text = read("head.txt")
         box.addView(head)
+
+        // 資料庫還沒收錄的型號 → 回報按鈕
+        val unknown = read("unknown.txt").lines().filter { it.isNotBlank() }
+        if (unknown.isNotEmpty()) {
+            val rep = Button(this)
+            rep.isAllCaps = false
+            rep.text = "回報 ${unknown.size} 個資料庫還沒收錄的型號（幫忙補資料）"
+            rep.setOnClickListener { reportUnknown(unknown) }
+            box.addView(rep)
+        }
 
         // 切換模式
         val modeBtn = Button(this)
@@ -304,6 +315,37 @@ class ReportActivity : AppCompatActivity() {
             }
             toggle.text = if (anyOpen) "全部展開" else "全部收合"
         }
+    }
+
+    // 打開瀏覽器到 GitHub 的「新問題」頁，內容已經填好；只有型號和零件代號，沒有個人資料
+    private fun reportUnknown(lines: List<String>) {
+        val head = read("head.txt").lines()
+        val model = head.getOrElse(0) { "" }
+        val kindCn = mapOf("device" to "手機", "cam" to "鏡頭", "panel" to "螢幕", "soc" to "處理器", "amp" to "喇叭/震動晶片")
+        val body = StringBuilder()
+        body.append("App 自動回報（只有型號和零件代號，沒有個人資料）\n\n")
+        body.append("手機：").append(model).append('\n')
+        body.append(head.getOrElse(1) { "" }).append("\n\n")
+        body.append("```\n")
+        for (l in lines) {
+            val f = l.split("\t")
+            body.append(kindCn[f[0]] ?: f[0]).append('\t').append(f.drop(1).joinToString("\t")).append('\n')
+        }
+        body.append("```\n")
+        val title = "回報：$model 有 ${lines.size} 個型號待收錄"
+        val url = "https://github.com/often591-create/phone-log-turn-people-can-understand/issues/new?title=" +
+            java.net.URLEncoder.encode(title, "UTF-8") + "&body=" + java.net.URLEncoder.encode(body.toString(), "UTF-8")
+        AlertDialog.Builder(this)
+            .setTitle("回報新型號")
+            .setMessage("會打開瀏覽器到 GitHub，內容已經填好（只有手機型號和零件代號）。\n\n" +
+                "登入 GitHub 後按綠色的送出按鈕就完成了。資料庫每天會自動上網查規格補上，之後打開 App 就看得到。")
+            .setPositiveButton("打開") { _, _ ->
+                try {
+                    startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                } catch (_: Exception) {}
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     // 標題：▼ 打開、▶ 收起來，後面接 [正常] / [注意]

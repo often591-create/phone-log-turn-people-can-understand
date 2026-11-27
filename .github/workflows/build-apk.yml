@@ -3,6 +3,7 @@ name: 自動產生 APK
 on:
   push:
     branches: [ main ]
+    paths-ignore: [ 'data/**' ]     # 只改規格資料庫不用重做 APK（手機會自己下載）
   workflow_dispatch:
 
 permissions:
@@ -25,6 +26,7 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
+          mkdir -p app/src/main/assets && cp ../data/* app/src/main/assets/   # 內建一份規格資料庫
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           ./gradlew assembleDebug --stacktrace
 

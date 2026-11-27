@@ -49,6 +49,9 @@ class MainActivity : AppCompatActivity() {
         setContentView(binding.root)
         CrashLog.install(this, "主畫面")
 
+        // 背景更新規格資料庫（網路慢或沒網路就算了，不影響使用）
+        Thread { DataSync.update(applicationContext) }.start()
+
         // 上一次閃退的原因（有的話）
         CrashLog.lastCrash(this)?.let { msg ->
             val tv = android.widget.TextView(this)

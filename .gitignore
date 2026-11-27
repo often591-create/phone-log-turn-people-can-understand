@@ -12,3 +12,4 @@ build/
 .gradle/
 .idea/
 local.properties
+android/app/src/main/assets/
