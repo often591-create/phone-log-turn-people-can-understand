@@ -1568,6 +1568,59 @@ int xa_naddr = 0, xa_aw = 0, xa_stereo = 0;
 /* 指紋（三星、vivo 的晶片型號） */
 char x_fp[32] = "";
 
+/* 套件的版本、安裝 / 更新時間、是不是系統內建 */
+char pk_ver[1500][24];
+char pk_first[1500][20], pk_last[1500][20];
+char pk_sys[1500];
+
+/* App 使用時間（usagestats 的每週統計） */
+struct AppUse { char pkg[96]; long sec; };
+struct AppUse us[800];
+int us_n = 0, us_state = 0;
+char us_range[64] = "";
+
+/* 各 App 的網路流量（開機以來） */
+struct NetUse { int uid; double rx, tx; };
+struct NetUse nt[800];
+int nt_n = 0, nt_state = 0;
+
+/* 不讓手機休眠的元件、叫醒手機的原因 */
+struct WakeItem { char who[16]; char name[96]; char dur[32]; long times; };
+struct WakeItem wl[10], wr[8];
+int wl_n = 0, wl_state = 0, wr_n = 0, wr_state = 0;
+
+/* 權限使用紀錄（appops） */
+const char *perm_op[] = {"FINE_LOCATION", "COARSE_LOCATION", "CAMERA", "RECORD_AUDIO", "READ_CLIPBOARD", "READ_CONTACTS", "READ_CALL_LOG", "READ_SMS"};
+int perm_cat[] = {0, 0, 1, 2, 3, 4, 5, 6};
+const char *perm_cn[] = {"位置", "相機", "麥克風", "剪貼簿", "聯絡人", "通話紀錄", "簡訊"};
+int perm_n = 8, perm_cat_n = 7;
+struct PermUse { char pkg[64]; int cat; char t[20]; };
+struct PermUse pu[1200];
+int pu_n = 0, ap_op = -1;
+char ap_pkg[64] = "";
+
+/* 充電紀錄（Battery History） */
+struct ChargeSession { char start[16]; char end[16]; int from, to; char plug[12]; long sec; };
+struct ChargeSession cs[15];
+int cs_n = 0, bh_state = 0, bh_charging = 0, bh_prev = -1;
+double bh_prev_t = 0, bh_first_t = 0, bh_last_t = 0, bh_dis_sec = 0, bh_start_t = 0;
+long bh_drop = 0;
+char bh_first[16] = "", bh_lastst[16] = "", bh_plug[12] = "";
+struct DrainHour { char key[12]; int drop; };
+struct DrainHour dh[400];
+int dh_n = 0;
+struct ChargeSession cs_cur;
+
+/* 鬧鐘叫醒手機的次數（alarm） */
+struct AlarmUse { char pkg[96]; long wakes; };
+struct AlarmUse al[300];
+int al_n = 0, al_state = 0;
+
+/* 定位（GNSS） */
+long gn_reports = -1, gn_ttff_n = -1, gn_l5 = -1;
+double gn_fail = -1, gn_ttff = -1, gn_acc = -1, gn_cn0 = -1;
+char gn_const[64] = "";
+
 /* 之後才定義的函式（在各分頁裡呼叫） */
 void ex_system_more(void);
 void ex_cpu_more(void);
@@ -1590,7 +1643,7 @@ void bytes_text(double b, char *out)
 /* 「14h 1m 33s 987ms」或「3d 17h 26m 9s」換成「14 小時 1 分」 */
 void dur_text(const char *s, char *out)
 {
-    long d = 0, h = 0, m = 0, v;
+    long d = 0, h = 0, m = 0, sec = 0, v;
     const char *p = s;
     while (*p) {
         if (!isdigit((unsigned char)*p)) { p++; continue; }
@@ -1599,12 +1652,14 @@ void dur_text(const char *s, char *out)
         if (*p == 'd') d = v;
         else if (*p == 'h') h = v;
         else if (*p == 'm' && p[1] != 's') m = v;
-        else if (*p == 's') break;
+        else if (*p == 's') sec = v;
+        else if (*p == 'm' && p[1] == 's') break;
         if (*p) p++;
     }
     if (d > 0) sprintf(out, "%ld 天 %ld 小時 %ld 分", d, h, m);
     else if (h > 0) sprintf(out, "%ld 小時 %ld 分", h, m);
-    else sprintf(out, "%ld 分", m);
+    else if (m > 0) sprintf(out, "%ld 分 %ld 秒", m, sec);
+    else sprintf(out, "%ld 秒", sec);
 }
 
 /* 加一個鏡頭感光元件（轉成大寫、不重複） */
@@ -1630,7 +1685,16 @@ const char *app_pkg[] = {
     "com.sec.android.app.launcher", "com.android.systemui", "com.taobao.taobao", "com.eg.android.AlipayGphone",
     "com.sina.weibo", "com.xingin.xhs", "com.zhihu.android", "com.baidu.BaiduMap",
     "com.autonavi.minimap", "com.google.android.apps.youtube.music", "com.kuaishou.nebula", "com.tencent.qqlive",
-    "com.netease.cloudmusic", "com.google.android.inputmethod.latin", "com.android.camera", "com.android.settings"
+    "com.netease.cloudmusic", "com.google.android.inputmethod.latin", "com.android.camera", "com.android.settings",
+    "android", "com.xiaomi.xmsf", "com.android.contacts", "com.android.mms", "com.android.deskclock",
+    "com.miui.securitycenter", "com.android.bluetooth", "com.android.updater", "com.miui.voiceassist", "com.xiaomi.market",
+    "com.android.phone", "com.google.android.apps.walletnfcrel", "com.google.android.apps.translate", "com.instagram.barcelona",
+    "com.roblox.client", "com.garena.game.codm", "com.garena.game.kgtw", "flar2.devcheck",
+    "com.anthropic.claude", "com.openai.chatgpt", "com.ss.android.ugc.trill", "com.tencent.android.qqdownloader",
+    "com.larus.nova", "com.aliyun.tongyi", "com.luna.music", "com.bbk.appstore",
+    "com.heytap.market", "com.sec.android.app.samsungapps", "com.oplus.camera", "com.android.launcher",
+    "com.coloros.gallery3d", "com.miui.gallery", "com.vivo.gallery", "com.sec.android.gallery3d",
+    "com.android.server.telecom", "com.vivo.pushservice"
 };
 const char *app_cn[] = {
     "Google Play 服務", "Play 商店", "YouTube", "Chrome",
@@ -1642,9 +1706,18 @@ const char *app_cn[] = {
     "三星桌面", "系統介面", "淘寶", "支付寶",
     "微博", "小紅書", "知乎", "百度地圖",
     "高德地圖", "YouTube Music", "快手", "騰訊視頻",
-    "網易雲音樂", "Gboard 鍵盤", "相機", "設定"
+    "網易雲音樂", "Gboard 鍵盤", "相機", "設定",
+    "Android 系統", "小米推播服務", "聯絡人", "簡訊", "時鐘",
+    "小米手機管家", "藍牙", "系統更新", "小愛同學", "小米應用商店",
+    "電話服務", "Google 錢包", "Google 翻譯", "Threads",
+    "Roblox", "決勝時刻 Mobile", "傳說對決", "DevCheck",
+    "Claude", "ChatGPT", "TikTok", "應用寶",
+    "豆包", "通義", "汽水音樂", "vivo 應用商店",
+    "OPPO 軟體商店", "Galaxy Store", "OPPO 相機", "OPPO 桌面",
+    "OPPO 相簿", "小米相簿", "vivo 相簿", "三星相簿",
+    "通話服務", "vivo 推播服務"
 };
-int app_n = 40;
+int app_n = sizeof(app_cn) / sizeof(app_cn[0]);
 
 /* 套件名稱 → 顯示用的名字 */
 void app_label(const char *pkg, char *out)
@@ -1736,6 +1809,160 @@ void add_size_array(const char *p)
     }
 }
 
+
+/* 「8:43:31」或「55:43」換成秒 */
+long hms_to_sec(const char *s)
+{
+    long v[4] = {0, 0, 0, 0};
+    int n = 0;
+    while (*s && n < 4) {
+        v[n++] = atol(s);
+        while (isdigit((unsigned char)*s)) s++;
+        if (*s != ':') break;
+        s++;
+    }
+    if (n == 2) return v[0] * 60 + v[1];
+    if (n == 3) return v[0] * 3600 + v[1] * 60 + v[2];
+    if (n == 4) return v[0] * 86400 + v[1] * 3600 + v[2] * 60 + v[3];
+    return 0;
+}
+
+/* 秒換成「3 小時 5 分」 */
+void sec_text2(long s, char *out)
+{
+    if (s >= 3600) sprintf(out, "%ld 小時 %ld 分", s / 3600, (s % 3600) / 60);
+    else if (s >= 60) sprintf(out, "%ld 分", s / 60);
+    else sprintf(out, "%ld 秒", s);
+}
+
+/* uid 數字 → 名字 */
+void uid_num_label(int uid, char *out)
+{
+    char u[16];
+    if (uid >= 10000 && uid < 20000) sprintf(u, "u0a%d", uid - 10000);
+    else sprintf(u, "%d", uid);
+    uid_label(u, out);
+}
+
+/* 「Wake lock u0a318 MicroMsg.Xxx: 1m 31s 921ms (266 times) ...」
+   「Wakeup reason 345 rcs_irq: 7m 52s 277ms (344 times) realtime」 */
+int parse_wake(const char *s, int has_who, struct WakeItem *w)
+{
+    const char *tm = strstr(s, " times)");
+    const char *op, *c, *p = s;
+    int len;
+    if (tm == NULL) return 0;
+    op = tm;
+    while (op > s && *op != '(') op--;
+    c = op;
+    while (c > s && !(c[0] == ':' && c[1] == ' ')) c--;
+    if (c <= s) return 0;
+    w->who[0] = '\0';
+    if (has_who) {
+        len = 0;
+        while (p[len] && p[len] != ' ' && len < 15) len++;
+        strncpy(w->who, p, len);
+        w->who[len] = '\0';
+        p += len;
+        while (*p == ' ') p++;
+    }
+    len = c - p;
+    if (len > 95) len = 95;
+    if (len < 0) len = 0;
+    strncpy(w->name, p, len);
+    w->name[len] = '\0';
+    len = op - (c + 2);
+    if (len > 31) len = 31;
+    if (len < 0) len = 0;
+    strncpy(w->dur, c + 2, len);
+    w->dur[len] = '\0';
+    trim(w->dur);
+    w->times = atol(op + 1);
+    return 1;
+}
+
+/* 叫醒手機的原因 → 白話 */
+const char *wake_reason_cn(const char *r)
+{
+    char low[96];
+    int i;
+    for (i = 0; r[i] && i < 95; i++) low[i] = tolower((unsigned char)r[i]);
+    low[i] = '\0';
+    if (strstr(low, "modem") || strstr(low, "rcs") || strstr(low, "radio") || strstr(low, "ipa_") || strstr(low, "rmnet")) return "行動網路";
+    if (strstr(low, "wlan") || strstr(low, "wifi")) return "Wi-Fi";
+    if (strstr(low, "timerfd") || strstr(low, "alarm") || strstr(low, "rtc")) return "計時器 / 鬧鐘";
+    if (strstr(low, "adsp") || strstr(low, "audio")) return "音訊 / 感測處理器";
+    if (strstr(low, "bt") || strstr(low, "blue")) return "藍牙";
+    if (strstr(low, "usb") || strstr(low, "charg") || strstr(low, "pmic")) return "充電 / USB";
+    if (strstr(low, "touch") || strstr(low, "_ts") || strstr(low, "key") || strstr(low, "power")) return "按鍵 / 觸控";
+    if (strstr(low, "sensor") || strstr(low, "ssc") || strstr(low, "scp")) return "感測器";
+    return "其他";
+}
+
+/* 充電紀錄：結束一段充電 */
+void bh_end_session(double t, const char *when, int lvl)
+{
+    int i;
+    if (t - bh_start_t < 120) return;          /* 不到 2 分鐘的不算 */
+    if (lvl <= cs_cur.from && t - bh_start_t < 600) return;   /* 10 分鐘內電量沒增加的（例如無線充電一下接上一下斷開）也不算 */
+    cs_cur.sec = (long)(t - bh_start_t);
+    cs_cur.to = lvl;
+    strcpy(cs_cur.end, when);
+    if (cs_n == 15) {
+        for (i = 0; i < 14; i++) cs[i] = cs[i + 1];
+        cs_n = 14;
+    }
+    cs[cs_n++] = cs_cur;
+}
+
+/* 充電紀錄的一行：  11-17 20:38:05.435 062 84090018 status=charging plug=ac ... */
+void bh_line(void)
+{
+    char md[8], hms[16], when[16], key[12], *p;
+    int lvl, i, chg;
+    double t;
+    if (!(isdigit((unsigned char)line[2]) && line[4] == '-' && line[7] == ' ')) return;
+    if (sscanf(line + 2, "%7s %15s %d", md, hms, &lvl) != 3 || lvl < 0 || lvl > 100) return;
+    if (!isdigit((unsigned char)line[21])) return;
+    t = log_to_sec(line + 2, g_cap_year);
+    sprintf(when, "%s %.5s", md, hms);
+    if (bh_first[0] == '\0') { strcpy(bh_first, when); bh_first_t = t; }
+    strcpy(bh_lastst, when);
+    bh_last_t = t;
+
+    chg = bh_charging;
+    if (strstr(line, " status=charging") || strstr(line, " status=full") || strstr(line, " +plugged")) chg = 1;
+    if (strstr(line, " status=discharging") || strstr(line, " status=not-charging") || strstr(line, " -plugged")) chg = 0;
+    if ((p = strstr(line, " plug=")) != NULL) {
+        copy_until(p + 6, ' ', bh_plug, sizeof(bh_plug));
+        if (bh_charging && strcmp(bh_plug, "none") != 0) strcpy(cs_cur.plug, bh_plug);
+    }
+
+    /* 沒插電時，電量掉了多少、花了多久 */
+    if (!bh_charging && bh_prev >= 0) {
+        if (t - bh_prev_t > 0 && t - bh_prev_t < 6 * 3600) bh_dis_sec += t - bh_prev_t;
+        if (lvl < bh_prev) {
+            bh_drop += bh_prev - lvl;
+            sprintf(key, "%s %.2s", md, hms);
+            for (i = 0; i < dh_n; i++) if (strcmp(dh[i].key, key) == 0) break;
+            if (i == dh_n && dh_n < 400) { strcpy(dh[dh_n].key, key); dh[dh_n].drop = 0; dh_n++; }
+            if (i < dh_n) dh[i].drop += bh_prev - lvl;
+        }
+    }
+
+    if (chg && !bh_charging) {             /* 開始充電 */
+        strcpy(cs_cur.start, when);
+        cs_cur.from = lvl;
+        strcpy(cs_cur.plug, strcmp(bh_plug, "none") == 0 ? "" : bh_plug);
+        bh_start_t = t;
+    } else if (!chg && bh_charging) {      /* 停止充電 */
+        bh_end_session(t, when, lvl);
+    }
+    bh_charging = chg;
+    bh_prev = lvl;
+    bh_prev_t = t;
+}
+
 /* ---------------- 讀檔時每一行 ---------------- */
 
 void ex_line(const char *section, const char *service)
@@ -1768,6 +1995,117 @@ void ex_line(const char *section, const char *service)
                 add_cam(tmp);
         }
         return;
+    }
+
+
+    /* App 使用時間（每週統計） */
+    if (strcmp(service, "usagestats") == 0 && us_state < 2) {
+        if (strstr(line, "In-memory weekly stats") != NULL) us_state = 1;
+        else if (us_state == 1 && strstr(line, "In-memory monthly stats") != NULL) us_state = 2;
+        else if (us_state == 1) {
+            if (us_range[0] == '\0' && (p = strstr(line, "timeRange=\"")) != NULL) {
+                copy_until(p + 11, '"', us_range, sizeof(us_range));
+                trim(us_range);
+            }
+            if ((p = strstr(line, "package=")) != NULL && (q = strstr(line, "totalTimeUsed=\"")) != NULL && us_n < 800) {
+                long sec = hms_to_sec(q + 15);
+                if (sec > 0) {
+                    copy_until(p + 8, ' ', us[us_n].pkg, 96);
+                    us[us_n].sec = sec;
+                    us_n++;
+                }
+            }
+        }
+    }
+
+    /* 各 App 的網路流量：    uid rxBytes rxPackets txBytes txPackets */
+    if (nt_state == 0 && starts_with(line, "    uid rxBytes rxPackets txBytes txPackets")) { nt_state = 1; return; }
+    if (nt_state == 1) {
+        int uid;
+        double rx, rp, tx, tp;
+        if (sscanf(line, " %d %lf %lf %lf %lf", &uid, &rx, &rp, &tx, &tp) == 5) {
+            if (nt_n < 800) { nt[nt_n].uid = uid; nt[nt_n].rx = rx; nt[nt_n].tx = tx; nt_n++; }
+        } else {
+            nt_state = 2;
+        }
+    }
+
+    /* 不讓手機休眠的元件 */
+    if (wl_state == 0 && starts_with(line, "  All partial wake locks:")) { wl_state = 1; return; }
+    if (wl_state == 1) {
+        if (starts_with(line, "  Wake lock ")) {
+            if (wl_n < 10 && parse_wake(line + 12, 1, &wl[wl_n])) wl_n++;
+        } else wl_state = 2;
+    }
+    /* 叫醒手機的原因 */
+    if (wr_state == 0 && starts_with(line, "  All wakeup reasons:")) { wr_state = 1; return; }
+    if (wr_state == 1) {
+        if (starts_with(line, "  Wakeup reason ")) {
+            if (wr_n < 8 && parse_wake(line + 16, 0, &wr[wr_n])) wr_n++;
+        } else wr_state = 2;
+    }
+
+    /* 權限使用紀錄 */
+    if (strcmp(service, "appops") == 0) {
+        if (starts_with(line, "  Uid ")) { ap_pkg[0] = '\0'; ap_op = -1; }
+        else if (starts_with(line, "    Package ")) { copy_until(line + 12, ':', ap_pkg, sizeof(ap_pkg)); ap_op = -1; }
+        else if (starts_with(line, "      ") && isupper((unsigned char)line[6])) {
+            ap_op = -1;
+            for (i = 0; i < perm_n; i++) {
+                a = strlen(perm_op[i]);
+                if (strncmp(line + 6, perm_op[i], a) == 0 && line[6 + a] == ' ') { ap_op = perm_cat[i]; break; }
+            }
+        } else if (ap_op >= 0 && ap_pkg[0] && strcmp(ap_pkg, "android") != 0 && (p = strstr(line, "Access: [")) != NULL && (q = strchr(p, ']')) != NULL) {
+            char t[20];
+            q++;
+            while (*q == ' ') q++;
+            if (isdigit((unsigned char)q[0])) {
+                strncpy(t, q, 16); t[16] = '\0';           /* 2026-11-18 19:27 */
+                for (i = 0; i < pu_n; i++) if (pu[i].cat == ap_op && strcmp(pu[i].pkg, ap_pkg) == 0) break;
+                if (i == pu_n && pu_n < 1200) { strcpy(pu[pu_n].pkg, ap_pkg); pu[pu_n].cat = ap_op; pu[pu_n].t[0] = '\0'; pu_n++; }
+                if (i < pu_n && strcmp(t, pu[i].t) > 0) strcpy(pu[i].t, t);
+            }
+        }
+    }
+
+    /* 充電紀錄 */
+    if (bh_state == 0 && starts_with(line, "Battery History [")) { bh_state = 1; return; }
+    if (bh_state == 1) {
+        if (line[0] == '\n' || line[0] == '\r' || line[0] == '\0') bh_state = 2;
+        else if (line[0] == ' ') bh_line();
+    }
+
+    /* 鬧鐘叫醒手機的次數：  u0a92:com.xxx +2m55s running, 47 wakeups: */
+    if (strcmp(service, "alarm") == 0 && al_state < 2) {
+        if (starts_with(line, "  Alarm Stats:")) al_state = 1;
+        else if (al_state == 1) {
+            if (starts_with(line, "  ") && line[2] != ' ' && (q = strstr(line, " wakeups:")) != NULL && (p = strchr(line, ':')) != NULL && p < q) {
+                char pkg[96];
+                long w;
+                const char *b = q;
+                while (b > line && b[-1] != ' ') b--;
+                w = atol(b);
+                copy_until(p + 1, ' ', pkg, sizeof(pkg));
+                for (i = 0; i < al_n; i++) if (strcmp(al[i].pkg, pkg) == 0) break;
+                if (i == al_n && al_n < 300) { strcpy(al[al_n].pkg, pkg); al[al_n].wakes = 0; al_n++; }
+                if (i < al_n) al[i].wakes += w;
+            } else if (!starts_with(line, "    ")) al_state = 2;
+        }
+    }
+
+    /* 定位（GNSS） */
+    if (strcmp(service, "location") == 0) {
+        if (gn_reports < 0 && (p = strstr(line, "Number of location reports: ")) != NULL) gn_reports = atol(p + 28);
+        if (gn_fail < 0 && (p = strstr(line, "Percentage location failure: ")) != NULL) gn_fail = atof(p + 29);
+        if (gn_ttff_n < 0 && (p = strstr(line, "Number of TTFF reports: ")) != NULL) gn_ttff_n = atol(p + 24);
+        if (gn_ttff < 0 && (p = strstr(line, "TTFF mean (sec): ")) != NULL) gn_ttff = atof(p + 17);
+        if (gn_acc < 0 && (p = strstr(line, "Position accuracy mean (m): ")) != NULL) gn_acc = atof(p + 28);
+        if (gn_cn0 < 0 && starts_with(line, "        Top 4 Avg CN0 mean (dB-Hz): ")) gn_cn0 = atof(line + 36);
+        if (gn_l5 < 0 && (p = strstr(line, "Total number of L5 sv status messages processed: ")) != NULL) gn_l5 = atol(p + 49);
+        if (gn_const[0] == '\0' && (p = strstr(line, "Used-in-fix constellation types: ")) != NULL) {
+            copy_until(p + 33, '\n', gn_const, sizeof(gn_const));
+            trim(gn_const);
+        }
     }
 
     /* 核心版本：Kernel: Linux version 6.6.118-android15-8-... */
@@ -1808,18 +2146,29 @@ void ex_line(const char *section, const char *service)
     if (xp_onbatt[0] == '\0' && starts_with(line, "  Time on battery: ")) copy_until(line + 19, '(', xp_onbatt, sizeof(xp_onbatt));
     if (xp_screen[0] == '\0' && starts_with(line, "  Screen on: ")) copy_until(line + 13, '(', xp_screen, sizeof(xp_screen));
 
-    /* 套件名稱和 uid 的對照 */
+    /* 套件：名稱、uid、版本、安裝 / 更新時間、是不是系統內建 */
     if (strcmp(service, "package") == 0) {
         if (starts_with(line, "  Package [")) {
+            char nm[96];
+            copy_until(line + 11, ']', nm, sizeof(nm));
             pk_wait = -1;
-            if (pk_n < 1500) {
-                copy_until(line + 11, ']', pk_name[pk_n], 96);
-                pk_wait = pk_n;
+            for (i = 0; i < pk_n; i++) if (strcmp(pk_name[i], nm) == 0) break;
+            if (i == pk_n && pk_n < 1500) {          /* 同一個套件後面又出現（舊版本）就不管 */
+                strcpy(pk_name[pk_n], nm);
+                pk_uid[pk_n] = -1;
+                pk_ver[pk_n][0] = pk_first[pk_n][0] = pk_last[pk_n][0] = '\0';
+                pk_sys[pk_n] = 0;
+                pk_wait = pk_n++;
             }
-        } else if (pk_wait >= 0 && ((p = strstr(line, "appId=")) != NULL || (p = strstr(line, "userId=")) != NULL)) {
-            pk_uid[pk_wait] = atoi(strchr(p, '=') + 1);
-            pk_n++;
+        } else if (starts_with(line, "  ") && line[2] != ' ') {
             pk_wait = -1;
+        } else if (pk_wait >= 0) {
+            if (pk_uid[pk_wait] < 0 && ((p = strstr(line, "appId=")) != NULL || (p = strstr(line, "userId=")) != NULL))
+                pk_uid[pk_wait] = atoi(strchr(p, '=') + 1);
+            if (pk_ver[pk_wait][0] == '\0' && starts_with(line, "    versionName=")) copy_until(line + 16, ' ', pk_ver[pk_wait], 24);
+            if (pk_last[pk_wait][0] == '\0' && starts_with(line, "    lastUpdateTime=")) copy_until(line + 19, '\n', pk_last[pk_wait], 20);
+            if (pk_first[pk_wait][0] == '\0' && (p = strstr(line, "firstInstallTime=")) != NULL) copy_until(p + 17, '\n', pk_first[pk_wait], 20);
+            if (starts_with(line, "    pkgFlags=[") && strstr(line, " SYSTEM ") != NULL) pk_sys[pk_wait] = 1;
         }
     }
 
@@ -2042,6 +2391,9 @@ void ex_line(const char *section, const char *service)
 
 void ex_finish(void)
 {
+    if (bh_charging && bh_prev >= 0) {        /* 抓報告的時候還在充電 */
+        bh_end_session(bh_last_t, bh_lastst, bh_prev);
+    }
     if (g_fp_text[0] == '\0' && x_fp[0]) sprintf(g_fp_text, "高通 Qualcomm 超聲波 (%s)", x_fp);
     if (xa_naddr >= 2 || xa_aw >= 2) xa_stereo = 1;
 }
@@ -3261,34 +3613,226 @@ void page_bluetooth(void)
     if (n > 0 && xbt_ndev == 0) printf("   (這個系統的報告沒有寫裝置名稱)\n");
 }
 
+/* 從 n 筆裡找最大的前 k 筆（用 key 函式比較），結果放進 idx，回傳個數 */
+int top_k(int n, int k, double (*key)(int), int *idx)
+{
+    int i, j, c = 0;
+    while (c < k) {
+        int best = -1;
+        for (i = 0; i < n; i++) {
+            for (j = 0; j < c; j++) if (idx[j] == i) break;
+            if (j < c) continue;
+            if (best < 0 || key(i) > key(best)) best = i;
+        }
+        if (best < 0 || key(best) <= 0) break;
+        idx[c++] = best;
+    }
+    return c;
+}
+double key_us(int i) { return (double)us[i].sec; }
+double key_nt(int i) { return nt[i].rx + nt[i].tx; }
+double key_al(int i) { return (double)al[i].wakes; }
+double key_dh(int i) { return (double)dh[i].drop; }
+
+/* 字串日期比大小用：把 "2026-11-18 19:27:16" 變成數字 */
+double date_key(const char *s)
+{
+    int y, mo, d, h = 0, mi = 0;
+    if (sscanf(s, "%d-%d-%d %d:%d", &y, &mo, &d, &h, &mi) < 3 || y < 2000) return 0;
+    return days_of(y, mo, d) * 1440.0 + h * 60 + mi;
+}
+double key_first(int i) { return pk_sys[i] ? 0 : date_key(pk_first[i]); }
+double key_last(int i)  { return pk_sys[i] ? 0 : date_key(pk_last[i]); }
+
 /* 應用程式頁 */
 void page_apps(void)
 {
     char a[48], lab[160];
-    int i, j, k, idx[10], n = 0;
+    int i, n, idx[15], user = 0, sys = 0;
     printf("\n========== 應用程式 ==========\n");
-    if (dn_n > 0) printf(" 已安裝 %d 個套件 (含系統內建)\n", dn_n);
-    else if (pk_n > 0) printf(" 已安裝約 %d 個套件 (含系統內建)\n", pk_n);
+    for (i = 0; i < pk_n; i++) { if (pk_sys[i]) sys++; else user++; }
+    if (pk_n > 0) printf(" 已安裝 %d 個 (自己裝的 %d 個，系統內建 %d 個)\n", pk_n, user, sys);
+    else if (dn_n > 0) printf(" 已安裝 %d 個套件 (含系統內建)\n", dn_n);
 
-    if (xp_n == 0) { printf("\n 沒有耗電紀錄\n"); return; }
-    printf("\n ---- 耗電排行 ----\n");
-    if (xp_onbatt[0]) { dur_text(xp_onbatt, a); printf(" 統計期間：用電池 %s", a); }
-    if (xp_screen[0]) { dur_text(xp_screen, a); printf("，螢幕亮著 %s", a); }
-    if (xp_onbatt[0] || xp_screen[0]) printf("\n\n");
-    for (k = 0; k < 10; k++) {
-        int best = -1;
-        for (i = 0; i < xp_n; i++) {
-            for (j = 0; j < n; j++) if (idx[j] == i) break;
-            if (j < n) continue;
-            if (best < 0 || xp[i].mah > xp[best].mah) best = i;
+    n = top_k(pk_n, 10, key_first, idx);
+    if (n > 0) {
+        printf("\n ---- 最近安裝的 App ----\n");
+        for (i = 0; i < n; i++) {
+            app_label(pk_name[idx[i]], lab);
+            printf(" %.10s  %s%s%s\n", pk_first[idx[i]], lab, pk_ver[idx[i]][0] ? "  v" : "", pk_ver[idx[i]]);
         }
-        if (best < 0 || xp[best].mah <= 0) break;
-        idx[n++] = best;
     }
+    n = top_k(pk_n, 10, key_last, idx);
+    if (n > 0) {
+        printf("\n ---- 最近更新的 App ----\n");
+        for (i = 0; i < n; i++) {
+            app_label(pk_name[idx[i]], lab);
+            printf(" %.10s  %s%s%s\n", pk_last[idx[i]], lab, pk_ver[idx[i]][0] ? "  v" : "", pk_ver[idx[i]]);
+        }
+    }
+    n = top_k(nt_n, 10, key_nt, idx);
+    if (n > 0) {
+        printf("\n ---- 開機以來網路用量最多 (Wi-Fi + 行動網路) ----\n");
+        for (i = 0; i < n; i++) {
+            bytes_text(nt[idx[i]].rx + nt[idx[i]].tx, a);
+            uid_num_label(nt[idx[i]].uid, lab);
+            printf(" %2d. %-9s %s\n", i + 1, a, lab);
+        }
+    }
+}
+
+/* 使用時間頁 */
+void page_usage(void)
+{
+    char a[48], lab[160];
+    int i, n, idx[15];
+    long total = 0;
+    printf("\n========== 使用時間 ==========\n");
+    if (us_n == 0) { printf(" 這支手機的報告沒有記錄 App 使用時間\n"); return; }
+    for (i = 0; i < us_n; i++) total += us[i].sec;
+    if (us_range[0]) printf(" 統計期間 %s\n", us_range);
+    sec_text2(total, a);
+    printf(" 所有 App 合計 %s\n\n", a);
+    n = top_k(us_n, 15, key_us, idx);
     for (i = 0; i < n; i++) {
-        uid_label(xp[idx[i]].uid, lab);
-        printf(" %2d. %6.0f mAh  %s\n", i + 1, xp[idx[i]].mah, lab);
+        sec_text2(us[idx[i]].sec, a);
+        app_label(us[idx[i]].pkg, lab);
+        printf(" %2d. %-14s %s\n", i + 1, a, lab);
     }
+}
+
+/* 耗電分析頁：耗電排行、不讓手機休眠的元件、叫醒手機的原因、鬧鐘 */
+void page_power(void)
+{
+    char a[48], lab[160];
+    int i, j, k, n = 0, idx[15];
+    printf("\n========== 耗電分析 ==========\n");
+
+    if (xp_n > 0) {
+        printf(" ---- 耗電排行 ----\n");
+        if (xp_onbatt[0]) { dur_text(xp_onbatt, a); printf(" 統計期間：用電池 %s", a); }
+        if (xp_screen[0]) { dur_text(xp_screen, a); printf("，螢幕亮著 %s", a); }
+        if (xp_onbatt[0] || xp_screen[0]) printf("\n");
+        for (k = 0; k < 10; k++) {
+            int best = -1;
+            for (i = 0; i < xp_n; i++) {
+                for (j = 0; j < n; j++) if (idx[j] == i) break;
+                if (j < n) continue;
+                if (best < 0 || xp[i].mah > xp[best].mah) best = i;
+            }
+            if (best < 0 || xp[best].mah <= 0) break;
+            idx[n++] = best;
+        }
+        for (i = 0; i < n; i++) {
+            uid_label(xp[idx[i]].uid, lab);
+            printf(" %2d. %6.0f mAh  %s\n", i + 1, xp[idx[i]].mah, lab);
+        }
+    }
+
+    if (wl_n > 0) {
+        printf("\n ---- 不讓手機休眠最久的 ----\n");
+        printf(" (App 或系統要求「先別睡」，時間越長越耗電)\n");
+        for (i = 0; i < wl_n; i++) {
+            dur_text(wl[i].dur, a);
+            uid_label(wl[i].who, lab);
+            printf(" %2d. %s，%ld 次  %s\n", i + 1, a, wl[i].times, lab);
+            printf("       %.70s\n", wl[i].name);
+        }
+    }
+
+    if (wr_n > 0) {
+        printf("\n ---- 叫醒手機最多次的原因 ----\n");
+        for (i = 0; i < wr_n; i++)
+        {
+            printf(" %2d. %6ld 次  %s\n", i + 1, wr[i].times, wake_reason_cn(wr[i].name));
+            printf("       %.60s\n", wr[i].name);
+        }
+    }
+
+    n = top_k(al_n, 10, key_al, idx);
+    if (n > 0) {
+        printf("\n ---- 用鬧鐘叫醒手機最多次的 App ----\n");
+        for (i = 0; i < n; i++) {
+            app_label(al[idx[i]].pkg, lab);
+            printf(" %2d. %6ld 次  %s\n", i + 1, al[idx[i]].wakes, lab);
+        }
+    }
+    if (xp_n == 0 && wl_n == 0 && wr_n == 0 && al_n == 0) printf(" 沒有記錄\n");
+}
+
+/* 充電紀錄頁 */
+void page_charge(void)
+{
+    char a[48], b[48];
+    int i, n, idx[3];
+    printf("\n========== 充電紀錄 ==========\n");
+    if (bh_first[0] == '\0') { printf(" 沒有記錄\n"); return; }
+    printf(" 紀錄期間 %s ～ %s\n", bh_first, bh_lastst);
+    if (bh_dis_sec > 1800) {
+        sec_text2((long)bh_dis_sec, a);
+        printf(" 沒插電的時間 %s，累計用掉 %ld%% 的電", a, bh_drop);
+        if (bh_drop >= 150) printf(" (約 %.1f 次充滿的量)", bh_drop / 100.0);
+        printf("\n");
+        printf(" 平均每小時掉 %.1f%%\n", bh_drop / (bh_dis_sec / 3600.0));
+    }
+    n = top_k(dh_n, 3, key_dh, idx);
+    if (n > 0) {
+        printf("\n ---- 掉電最快的時段 ----\n");
+        for (i = 0; i < n; i++) printf(" %s 點那一小時  掉了 %d%%\n", dh[idx[i]].key, dh[idx[i]].drop);
+    }
+    printf("\n ---- 最近幾次充電 ----\n");
+    if (cs_n == 0) printf(" 這段期間沒有充電\n");
+    for (i = cs_n - 1; i >= 0; i--) {
+        const char *pl = strcmp(cs[i].plug, "ac") == 0 ? "插座" : strcmp(cs[i].plug, "usb") == 0 ? "USB" :
+                         strcmp(cs[i].plug, "wireless") == 0 ? "無線" : cs[i].plug;
+        sec_text2(cs[i].sec, a);
+        sprintf(b, "%d%% → %d%%", cs[i].from, cs[i].to);
+        printf(" %s  %-12s 充了 %s %s\n", cs[i].start, b, a, pl);
+    }
+}
+
+/* 權限使用頁 */
+void page_perm(void)
+{
+    char lab[160];
+    int c, i, k, any = 0, shown, used[1200];
+    printf("\n========== 權限使用 ==========\n");
+    printf(" (最近用過這些權限的 App，新的在前面)\n");
+    for (c = 0; c < perm_cat_n; c++) {
+        shown = 0;
+        for (i = 0; i < pu_n; i++) used[i] = 0;
+        for (k = 0; k < 8; k++) {
+            int best = -1;
+            for (i = 0; i < pu_n; i++) {
+                if (pu[i].cat != c || used[i] || pu[i].t[0] == '\0') continue;
+                if (best < 0 || strcmp(pu[i].t, pu[best].t) > 0) best = i;
+            }
+            if (best < 0) break;
+            used[best] = 1;
+            if (shown == 0) printf("\n ---- %s ----\n", perm_cn[c]);
+            app_label(pu[best].pkg, lab);
+            printf(" %.11s  %s\n", pu[best].t + 5, lab);
+            shown++;
+            any = 1;
+        }
+    }
+    if (!any) printf("\n 沒有記錄\n");
+}
+
+/* 定位頁 */
+void page_gnss(void)
+{
+    printf("\n========== 定位 (GPS) ==========\n");
+    if (gn_reports < 0) { printf(" 沒有記錄\n"); return; }
+    printf(" (開機以來的統計，不含位置座標)\n");
+    printf(" 定位次數       %ld 次", gn_reports);
+    if (gn_fail >= 0) printf("，失敗 %.1f%%", gn_fail);
+    printf("\n");
+    if (gn_ttff > 0 && gn_ttff_n > 0) printf(" 首次定位平均   %.1f 秒%s\n", gn_ttff, gn_ttff > 30 ? "  (偏慢)" : "");
+    if (gn_acc > 0) printf(" 平均準確度     %.0f 公尺\n", gn_acc);
+    if (gn_cn0 > 0) printf(" 衛星訊號平均   %.0f dB-Hz %s\n", gn_cn0, gn_cn0 >= 30 ? "(良好)" : gn_cn0 >= 20 ? "(普通)" : "(偏弱)");
+    if (gn_l5 >= 0) printf(" 雙頻定位 (L5)  %s\n", gn_l5 > 0 ? "支援，有在使用" : "這段期間沒用到");
+    if (gn_const[0]) printf(" 用到的衛星系統 %s\n", gn_const);
 }
 
 /* ================= 主程式 ================= */
@@ -3461,6 +4005,11 @@ int main()
         printf("15. 音訊與震動\n");
         printf("16. 藍牙\n");
         printf("17. 應用程式\n");
+        printf("18. 使用時間\n");
+        printf("19. 耗電分析\n");
+        printf("20. 充電紀錄\n");
+        printf("21. 權限使用\n");
+        printf("22. 定位 (GPS)\n");
         printf(" 0. 離開\n");
         printf("請選擇:");
         if (scanf("%d", &choice) != 1) break;
@@ -3483,6 +4032,11 @@ int main()
         else if (choice == 15) page_audio();
         else if (choice == 16) page_bluetooth();
         else if (choice == 17) page_apps();
+        else if (choice == 18) page_usage();
+        else if (choice == 19) page_power();
+        else if (choice == 20) page_charge();
+        else if (choice == 21) page_perm();
+        else if (choice == 22) page_gnss();
         else { printf("沒有這個選項\n"); continue; }
         wait_enter();
     }
@@ -3513,7 +4067,7 @@ JNIEXPORT jdouble JNICALL
 Java_com_example_ov_ReportActivity_totalBytes(JNIEnv *env, jobject thiz) { return g_prog_total; }
 
 /* App 傳進來：檔案路徑（.zip 會先由 App 解壓縮到同名資料夾）、結果要放的資料夾
-   結果：menu.txt（每行「頁名<TAB>狀態」）、p1.txt ～ p17.txt（每一頁的內容） */
+   結果：menu.txt（每行「頁名<TAB>狀態」）、p1.txt ～ p22.txt（每一頁的內容） */
 JNIEXPORT jint JNICALL
 Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jpath, jstring jout)
 {
@@ -3540,12 +4094,17 @@ Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jp
     printf("%s\t%s\n", "記憶體", status(2));
     printf("%s\t%s\n", "儲存空間", status(3));
     printf("%s\t%s\n", "電池", status(4));
+    printf("%s\t%s\n", "充電紀錄", "");
+    printf("%s\t%s\n", "耗電分析", "");
     printf("%s\t%s\n", "溫度", status(10));
     printf("%s\t%s\n", "網路", status(5));
     printf("%s\t%s\n", "藍牙", "");
+    printf("%s\t%s\n", "定位 (GPS)", "");
     printf("%s\t%s\n", "感測器", "");
     printf("%s\t%s\n", "音訊與震動", "");
     printf("%s\t%s\n", "應用程式", "");
+    printf("%s\t%s\n", "使用時間", "");
+    printf("%s\t%s\n", "權限使用", "");
     printf("%s\t%s\n", "背景凍結", status(6));
     printf("%s\t%s\n", "穩定性", status(7));
     printf("%s\t%s\n", "錯誤訊息", status(8));
@@ -3555,23 +4114,28 @@ Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jp
     printf("%s\nAndroid %s\n抓取時間 %s\n", or_none(g_model), or_none(g_android), or_none(g_capture));
 
     /* 每一頁的檔名照上面 menu.txt 的順序：p1.txt、p2.txt ... */
-    print_to("p1.txt");  page_overview();
-    print_to("p2.txt");  page_system();
-    print_to("p3.txt");  page_cpu();
-    print_to("p4.txt");  page_parts();
-    print_to("p5.txt");  page_memory();
-    print_to("p6.txt");  page_storage();
-    print_to("p7.txt");  page_battery();
-    print_to("p8.txt");  page_thermal();
-    print_to("p9.txt");  page_network();
-    print_to("p10.txt"); page_bluetooth();
-    print_to("p11.txt"); page_sensors();
-    print_to("p12.txt"); page_audio();
-    print_to("p13.txt"); page_apps();
-    print_to("p14.txt"); page_freeze();
-    print_to("p15.txt"); page_stability();
-    print_to("p16.txt"); page_errors();
-    print_to("p17.txt"); page_history();
+    print_to("p1.txt"); page_overview();
+    print_to("p2.txt"); page_system();
+    print_to("p3.txt"); page_cpu();
+    print_to("p4.txt"); page_parts();
+    print_to("p5.txt"); page_memory();
+    print_to("p6.txt"); page_storage();
+    print_to("p7.txt"); page_battery();
+    print_to("p8.txt"); page_charge();
+    print_to("p9.txt"); page_power();
+    print_to("p10.txt"); page_thermal();
+    print_to("p11.txt"); page_network();
+    print_to("p12.txt"); page_bluetooth();
+    print_to("p13.txt"); page_gnss();
+    print_to("p14.txt"); page_sensors();
+    print_to("p15.txt"); page_audio();
+    print_to("p16.txt"); page_apps();
+    print_to("p17.txt"); page_usage();
+    print_to("p18.txt"); page_perm();
+    print_to("p19.txt"); page_freeze();
+    print_to("p20.txt"); page_stability();
+    print_to("p21.txt"); page_errors();
+    print_to("p22.txt"); page_history();
     fflush(stdout);
     return 1;
 }
