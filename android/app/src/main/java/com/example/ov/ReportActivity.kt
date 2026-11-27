@@ -89,6 +89,7 @@ class ReportActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(this, "分析畫面")
         val pad = dp(16)
 
         box = LinearLayout(this)

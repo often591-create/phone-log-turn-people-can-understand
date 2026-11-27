@@ -47,6 +47,23 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        CrashLog.install(this, "主畫面")
+
+        // 上一次閃退的原因（有的話）
+        CrashLog.lastCrash(this)?.let { msg ->
+            val tv = android.widget.TextView(this)
+            tv.setTextIsSelectable(true)
+            tv.textSize = 12f
+            tv.setPadding(48, 24, 48, 0)
+            tv.text = msg
+            val sv = android.widget.ScrollView(this)
+            sv.addView(tv)
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("上次閃退的原因（請截圖回報）")
+                .setView(sv)
+                .setPositiveButton("知道了", null)
+                .show()
+        }
 
         binding.pickButton.setOnClickListener {
             pickFile.launch(arrayOf("*/*"))

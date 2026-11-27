@@ -1,0 +1,53 @@
+========================================================
+== dumpstate: 2026-11-27 12:00:00
+========================================================
+
+Build: TEST.000
+Build fingerprint: 'Xiaomi/test/test:16/TEST/1:user/release-keys'
+Bootloader: unknown
+Radio: unknown
+Kernel: Linux version 6.6.0 (test)
+Uptime: up 1 days, 2:03
+------ SYSTEM PROPERTIES (getprop) ------
+[ro.product.model]: [TestPhone]
+[ro.product.brand]: [Xiaomi]
+[ro.product.manufacturer]: [Xiaomi]
+[ro.build.version.release]: [16]
+[ro.build.version.sdk]: [36]
+[ro.soc.model]: [SM8750]
+[ro.sf.lcd_density]: [480]
+------ 0.010s was the duration of 'SYSTEM PROPERTIES' ------
+------ MEMORY INFO (/proc/meminfo) ------
+MemTotal:       15728640 kB
+MemFree:         1048576 kB
+MemAvailable:    6291456 kB
+SwapTotal:       8388608 kB
+SwapFree:        4194304 kB
+------ KERNEL LOG (dmesg) ------
+[    0.000000] Booting Linux
+
+-------------------------------------------------------------------------------
+DUMP OF SERVICE battery:
+Current Battery Service state:
+  AC powered: false
+  USB powered: true
+  status: 2
+  health: 2
+  present: true
+  level: 80
+  scale: 100
+  voltage: 4100
+  temperature: 300
+  technology: Li-poly
+
+-------------------------------------------------------------------------------
+DUMP OF SERVICE batterystats:
+Battery History (1% used):
+
+-------------------------------------------------------------------------------
+DUMP OF SERVICE diskstats:
+Data-Free: 100000K / 200000K total = 50% free
+
+------ SYSTEM LOG (logcat -v threadtime -v printable -v uid -d *:v) ------
+11-27 12:00:00.000  1000  1000  1000 I test: hello
+
