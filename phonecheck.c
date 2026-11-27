@@ -324,8 +324,8 @@ double sd_time[200];         /* 關機的時間（秒），用來判斷崩潰是
 int g_nsd = 0;
 
 /* 總覽用：每一頁的狀態 */
-#define CAT_N 11
-const char *cat_name[CAT_N] = {"系統", "處理器與螢幕", "記憶體", "儲存空間", "電池", "網路", "背景凍結", "穩定性", "錯誤訊息", "歷史紀錄", "溫度"};
+#define CAT_N 12
+const char *cat_name[CAT_N] = {"系統", "處理器與螢幕", "記憶體", "儲存空間", "電池", "網路", "背景凍結", "穩定性", "錯誤訊息", "歷史紀錄", "溫度", "安全檢查"};
 int cat_warn[CAT_N];
 char cat_note[CAT_N][128];
 
@@ -1621,6 +1621,56 @@ long gn_reports = -1, gn_ttff_n = -1, gn_l5 = -1;
 double gn_fail = -1, gn_ttff = -1, gn_acc = -1, gn_cn0 = -1;
 char gn_const[64] = "";
 
+/* ---------- 安全檢查 ---------- */
+char sc_lock[16] = "";                        /* PIN、PASSWORD、PATTERN、NONE */
+int sc_face_n = -1, sc_face_ok = 0, sc_face_ng = 0;
+int sc_fp_n = -1, sc_fp_ok = 0, sc_fp_ng = 0;
+char sc_a11y[512] = "";                       /* 開了無障礙服務的（設定裡的原始值） */
+char sc_admin[8][96];
+int sc_admin_n = 0, sc_admin_state = 0;
+char sc_install[40][64];                      /* 可以安裝未知來源 App 的 */
+int sc_install_n = 0, sc_install_op = 0;
+char sc_dns_mode[24] = "", sc_dns_host[64] = "", sc_vpn[96] = "";
+int sc_unknown_src = -1;
+
+/* ---------- 設定狀態 ---------- */
+int st_bright = -1, st_bright_auto = -1, st_night = -1, st_low_power = -1, st_zen = -1;
+long st_timeout = -1;
+double st_font = -1, st_anim = -1, st_trans = -1, st_win = -1;
+char st_white[60][64];                        /* 不受電池最佳化限制的 App */
+int st_white_n = 0, st_white_state = 0;
+
+/* ---------- 效能 ---------- */
+struct ProcUse { char name[64]; double val; };
+struct ProcUse pm[10], pc[10];                /* 佔記憶體、吃處理器 */
+int pm_n = 0, pm_state = 0, pc_n = 0, pc_state = 0;
+char pm_title[24] = "";
+long mi_total = -1, mi_free = -1, mi_used = -1, mi_lost = -1, mi_zram = -1, mi_swap_used = -1;
+char mi_status[16] = "", pc_load[32] = "";
+
+/* ---------- 通知與相機 ---------- */
+struct CountItem { char name[96]; int n; };
+struct CountItem nf[200], cam[60];
+int nf_n = 0, cam_n = 0;
+
+/* ---------- 進階數據 ---------- */
+struct WakeItem kw[10];
+int kw_n = 0, kw_state = 0;
+struct TempItem { char name[24]; double v; };
+struct TempItem tz[40];
+int tz_n = 0, tz_state = 0;
+
+/* ---------- 原始資料：每個區段在檔案裡的位置 ---------- */
+struct RawSec { char name[80]; long start; char kind; };
+struct RawSec rs[3000];
+int rs_n = 0;
+long rs_file_size = 0;
+char rs_path[1000] = "";
+
+/* 原始資料要遮掉的字（Wi-Fi 名稱、裝置名稱，常常含有人名或地址） */
+char mk[150][64];
+int mk_n = 0;
+
 /* 之後才定義的函式（在各分頁裡呼叫） */
 void ex_system_more(void);
 void ex_cpu_more(void);
@@ -1629,6 +1679,8 @@ void ex_storage_more(void);
 void ex_battery_now(void);
 void ex_network_more(void);
 void ex_amp_line(void);
+void note(const char *s);
+void add_mask(const char *s);
 
 /* ---------------- 小工具 ---------------- */
 
@@ -1963,6 +2015,89 @@ void bh_line(void)
     bh_prev_t = t;
 }
 
+/* 名字出現一次就加 1 */
+void add_count(struct CountItem *arr, int *n, int max, const char *name)
+{
+    int i;
+    for (i = 0; i < *n; i++) if (strcmp(arr[i].name, name) == 0) { arr[i].n++; return; }
+    if (*n < max) { strncpy(arr[*n].name, name, 95); arr[*n].name[95] = '\0'; arr[*n].n = 1; (*n)++; }
+}
+
+/* 「632,420K」換成數字（KB） */
+double kb_num(const char *s)
+{
+    double v = 0;
+    while (*s == ' ') s++;
+    while (isdigit((unsigned char)*s) || *s == ',') {
+        if (*s != ',') v = v * 10 + (*s - '0');
+        s++;
+    }
+    return v;
+}
+
+/* 生物辨識：{"service":"FaceProvider/default","prints":[{"id":0,"count":1,"accept":22,"reject":3 */
+void read_bio(const char *p, int *cnt, int *ok, int *ng)
+{
+    const char *q;
+    if ((q = strstr(p, "\"count\":")) != NULL) *cnt = atoi(q + 8);
+    if ((q = strstr(p, "\"accept\":")) != NULL) *ok = atoi(q + 9);
+    if ((q = strstr(p, "\"reject\":")) != NULL) *ng = atoi(q + 9);
+}
+
+/* 系統設定的一筆：_id:12 name:font_scale pkg:android value:1.0 default:... */
+void read_setting(const char *s)
+{
+    char name[64], val[512];
+    const char *p = strstr(s, " name:"), *q = strstr(s, " value:");
+    if (p == NULL || q == NULL) return;
+    copy_until(p + 6, ' ', name, sizeof(name));
+    copy_until(q + 7, ' ', val, sizeof(val));
+    if (strcmp(val, "null") == 0 || strcmp(val, "{null}") == 0) val[0] = '\0';
+    if (strcmp(name, "enabled_accessibility_services") == 0 && sc_a11y[0] == '\0') strcpy(sc_a11y, val[0] ? val : "-");
+    else if (strcmp(name, "private_dns_mode") == 0 && sc_dns_mode[0] == '\0') strncpy(sc_dns_mode, val, 23);
+    else if (strcmp(name, "private_dns_specifier") == 0 && sc_dns_host[0] == '\0') strncpy(sc_dns_host, val, 63);
+    else if (strcmp(name, "always_on_vpn_app") == 0 && sc_vpn[0] == '\0') strncpy(sc_vpn, val, 95);
+    else if (strcmp(name, "install_non_market_apps") == 0 && sc_unknown_src < 0) sc_unknown_src = atoi(val);
+    else if (strcmp(name, "screen_brightness") == 0 && st_bright < 0) st_bright = atoi(val);
+    else if (strcmp(name, "screen_brightness_mode") == 0 && st_bright_auto < 0) st_bright_auto = atoi(val);
+    else if (strcmp(name, "screen_off_timeout") == 0 && st_timeout < 0) st_timeout = atol(val);
+    else if (strcmp(name, "font_scale") == 0 && st_font < 0) st_font = atof(val);
+    else if (strcmp(name, "animator_duration_scale") == 0 && st_anim < 0) st_anim = atof(val);
+    else if (strcmp(name, "transition_animation_scale") == 0 && st_trans < 0) st_trans = atof(val);
+    else if (strcmp(name, "window_animation_scale") == 0 && st_win < 0) st_win = atof(val);
+    else if (strcmp(name, "ui_night_mode") == 0 && st_night < 0) st_night = atoi(val);
+    else if (strcmp(name, "low_power") == 0 && st_low_power < 0) st_low_power = atoi(val);
+    else if (strcmp(name, "zen_mode") == 0 && st_zen < 0) st_zen = atoi(val);
+    else if (strcmp(name, "device_name") == 0 || strcmp(name, "bluetooth_name") == 0) add_mask(val);
+}
+
+/* 加一個要遮掉的字 */
+void add_mask(const char *s)
+{
+    int i;
+    if (strlen(s) < 3 || s[0] == '<') return;          /* 太短的、<unknown ssid> 不用 */
+    for (i = 0; i < mk_n; i++) if (strcmp(mk[i], s) == 0) return;
+    if (mk_n < 150) { strncpy(mk[mk_n], s, 63); mk[mk_n][63] = '\0'; mk_n++; }
+}
+
+/* 原始資料：記下一個區段（在 read_file 裡讀到區段標題時呼叫） */
+void raw_add(const char *title, char kind, long start)
+{
+    char *p;
+    if (rs_n >= 3000) return;
+    copy_until(title, '\n', rs[rs_n].name, sizeof(rs[rs_n].name));
+    trim(rs[rs_n].name);
+    p = strstr(rs[rs_n].name, " (");          /* 後面的指令不用顯示 */
+    if (p != NULL) *p = '\0';
+    p = strstr(rs[rs_n].name, " ------");
+    if (p != NULL) *p = '\0';
+    p = rs[rs_n].name + strlen(rs[rs_n].name);
+    if (p > rs[rs_n].name && p[-1] == ':') p[-1] = '\0';
+    rs[rs_n].start = start;
+    rs[rs_n].kind = kind;
+    rs_n++;
+}
+
 /* ---------------- 讀檔時每一行 ---------------- */
 
 void ex_line(const char *section, const char *service)
@@ -2105,6 +2240,114 @@ void ex_line(const char *section, const char *service)
         if (gn_const[0] == '\0' && (p = strstr(line, "Used-in-fix constellation types: ")) != NULL) {
             copy_until(p + 33, '\n', gn_const, sizeof(gn_const));
             trim(gn_const);
+        }
+    }
+
+    /* ---------- 原始資料要遮掉的 Wi-Fi 名稱 ---------- */
+    if ((p = strstr(line, "SSID: \"")) != NULL || (p = strstr(line, "wifiNetworkKey=\"")) != NULL) {
+        p = strchr(p, '"') + 1;
+        copy_until(p, '"', tmp, sizeof(tmp));
+        add_mask(tmp);
+    }
+
+    /* ---------- 安全檢查 ---------- */
+    if (strcmp(service, "settings") == 0 && starts_with(line, "_id:")) read_setting(line);
+    if (strcmp(service, "lock_settings") == 0 && sc_lock[0] == '\0' && (p = strstr(line, "CredentialType: ")) != NULL) {
+        copy_until(p + 16, '\n', sc_lock, sizeof(sc_lock));
+        trim(sc_lock);
+    }
+    if (sc_face_n < 0 && (p = strstr(line, "{\"service\":\"FaceProvider")) != NULL) read_bio(p, &sc_face_n, &sc_face_ok, &sc_face_ng);
+    if (sc_fp_n < 0 && (p = strstr(line, "{\"service\":\"FingerprintProvider")) != NULL) read_bio(p, &sc_fp_n, &sc_fp_ok, &sc_fp_ng);
+    if (sc_admin_state == 0 && starts_with(line, "  Enabled Device Admins (User 0")) { sc_admin_state = 1; return; }
+    if (sc_admin_state == 1) {
+        if (starts_with(line, "    ") && line[4] != ' ' && (p = strchr(line, '/')) != NULL && strstr(line, "mPassword") == NULL) {
+            if (sc_admin_n < 8) { copy_until(line + 4, '/', sc_admin[sc_admin_n], 96); sc_admin_n++; }
+        } else if (!starts_with(line, "      ") && !(line[0] == ' ' && line[1] == ' ' && line[2] == '\n')) {
+            sc_admin_state = 2;
+        }
+    }
+    /* 可以安裝未知來源 App（appops 的 REQUEST_INSTALL_PACKAGES (allow)） */
+    if (strcmp(service, "appops") == 0 && ap_pkg[0] && starts_with(line, "      REQUEST_INSTALL_PACKAGES (allow)")) {
+        for (i = 0; i < sc_install_n; i++) if (strcmp(sc_install[i], ap_pkg) == 0) break;
+        if (i == sc_install_n && sc_install_n < 40) strcpy(sc_install[sc_install_n++], ap_pkg);
+    }
+
+    /* ---------- 設定狀態：不受電池最佳化限制的 App ---------- */
+    if (st_white_state == 0 && starts_with(line, "  Whitelist user apps:")) { st_white_state = 1; return; }
+    if (st_white_state == 1) {
+        if (starts_with(line, "    ") && line[4] != ' ') {
+            if (st_white_n < 60) { copy_until(line + 4, ' ', st_white[st_white_n], 64); trim(st_white[st_white_n]); st_white_n++; }
+        } else st_white_state = 2;
+    }
+
+    /* ---------- 效能 ---------- */
+    if (pm_state == 0 && (starts_with(line, "Total PSS by process:") || starts_with(line, "Total RSS by process:"))) {
+        pm_state = 1;
+        copy_until(line + 6, ' ', pm_title, sizeof(pm_title));     /* PSS 或 RSS */
+        return;
+    }
+    if (pm_state == 1) {
+        if (starts_with(line, "    ") && (p = strstr(line, "K: ")) != NULL) {
+            if (pm_n < 10) {
+                pm[pm_n].val = kb_num(line);
+                copy_until(p + 3, ' ', pm[pm_n].name, 64);
+                pm_n++;
+            }
+        } else pm_state = 2;
+    }
+    if (strcmp(section, "MEMORY INFO") != 0 && mi_total < 0 && starts_with(line, "Total RAM: ")) {
+        mi_total = (long)kb_num(line + 11);
+        if ((p = strstr(line, "(status ")) != NULL) copy_until(p + 8, ')', mi_status, sizeof(mi_status));
+    }
+    if (mi_free < 0 && starts_with(line, " Free RAM: ")) mi_free = (long)kb_num(line + 11);
+    if (mi_used < 0 && starts_with(line, " Used RAM: ")) mi_used = (long)kb_num(line + 11);
+    if (mi_lost < 0 && starts_with(line, " Lost RAM: ")) mi_lost = (long)kb_num(line + 11);
+    if (mi_zram < 0 && starts_with(line, "     ZRAM: ")) {
+        mi_zram = (long)kb_num(line + 11);
+        if ((p = strstr(line, "used for ")) != NULL) mi_swap_used = (long)kb_num(p + 9);
+    }
+    if (strstr(service, "cpuinfo") != NULL && pc_state < 2) {
+        if (pc_load[0] == '\0' && starts_with(line, "Load: ")) copy_until(line + 6, '\n', pc_load, sizeof(pc_load));
+        if (starts_with(line, "CPU usage from ")) { pc_state = 1; return; }
+        if (pc_state == 1) {
+            if (line[0] == ' ' && (p = strchr(line, '%')) != NULL && (q = strchr(p, '/')) != NULL && isdigit((unsigned char)p[2])) {
+                if (pc_n < 10) {
+                    pc[pc_n].val = atof(line);
+                    copy_until(q + 1, ':', pc[pc_n].name, 64);
+                    pc_n++;
+                }
+            } else pc_state = 2;
+        }
+    }
+
+    /* ---------- 通知與相機 ---------- */
+    if (starts_with(line, "    NotificationRecord(0x") && (p = strstr(line, " pkg=")) != NULL && strstr(service, "notification") != NULL) {
+        copy_until(p + 5, ' ', tmp, sizeof(tmp));
+        add_count(nf, &nf_n, 200, tmp);
+    }
+    if (strcmp(service, "media.camera") == 0 && (p = strstr(line, " : CONNECT device ")) != NULL && (q = strstr(p, "for package ")) != NULL) {
+        copy_until(q + 12, ' ', tmp, sizeof(tmp));
+        if (!starts_with(tmp, "client.pid")) add_count(cam, &cam_n, 60, tmp);
+    }
+
+    /* ---------- 進階數據 ---------- */
+    if (kw_state == 0 && starts_with(line, "  All kernel wake locks:")) { kw_state = 1; return; }
+    if (kw_state == 1) {
+        if (starts_with(line, "  Kernel Wake lock ")) {
+            if (kw_n < 10 && parse_wake(line + 19, 0, &kw[kw_n])) kw_n++;
+        } else kw_state = 2;
+    }
+    if (strcmp(service, "thermalservice") == 0 && tz_state < 2) {
+        if (starts_with(line, "Cached temperatures:")) { tz_state = 1; return; }
+        if (tz_state == 1) {
+            if (line[0] == '\t' && (p = strstr(line, "mValue=")) != NULL && (q = strstr(line, "mName=")) != NULL) {
+                double v = atof(p + 7);
+                if (tz_n < 40 && v > 0 && v < 150) {
+                    copy_until(q + 6, ',', tz[tz_n].name, 24);
+                    tz[tz_n].v = v;
+                    tz_n++;
+                }
+            } else tz_state = 2;
         }
     }
 
@@ -2391,6 +2634,7 @@ void ex_line(const char *section, const char *service)
 
 void ex_finish(void)
 {
+    if (xbt_name[0]) add_mask(xbt_name);
     if (bh_charging && bh_prev >= 0) {        /* 抓報告的時候還在充電 */
         bh_end_session(bh_last_t, bh_lastst, bh_prev);
     }
@@ -2590,6 +2834,8 @@ long read_file(const char *path)
     printf("\n正在讀取... 這個檔案很大，請稍等\n");
     fseek(in, 0, SEEK_END);
     g_prog_total = (double)ftell(in);
+    rs_file_size = ftell(in);
+    strncpy(rs_path, path, sizeof(rs_path) - 1);
     fseek(in, 0, SEEK_SET);
 
     while (fgets(line, LINE_SIZE, in) != NULL) {
@@ -2608,6 +2854,7 @@ long read_file(const char *path)
             section[i] = '\0';
             trim(section);
             service[0] = '\0';
+            raw_add(line + 7, 'S', ftell(in));      /* 原始資料用：記下這個區段從哪裡開始 */
             g_wifi_score_on = 0;
             if (strcmp(section, "VM TRACES AT LAST ANR") == 0) {
                 p = strstr(line, "/data/anr/");
@@ -2618,6 +2865,7 @@ long read_file(const char *path)
         }
         if (starts_with(line, "DUMP OF SERVICE ")) {
             copy_until(line + 16, ':', service, sizeof(service));
+            raw_add(line + 16, 'D', ftell(in));
             g_wifi_score_on = 0;
             continue;
         }
@@ -3101,6 +3349,11 @@ void judge(void)
     if (xt[2] > 45 || xt[3] > 45) { cat_warn[10] = 1; sprintf(cat_note[10], "電池 / 機身溫度偏高 (%.0f°C)", xt[2] > xt[3] ? xt[2] : xt[3]); }
     if (xt[0] > 90) { cat_warn[10] = 1; sprintf(cat_note[10], "處理器溫度 %.0f°C", xt[0]); }
     if (xt_status >= 2) { cat_warn[10] = 1; sprintf(cat_note[10], "系統發熱等級 %d，效能會被降低", xt_status); }
+
+    /* 安全檢查：有開無障礙服務的 App、沒有螢幕鎖、無線偵錯開著、Bootloader 解鎖 */
+    if (sc_a11y[0] && strcmp(sc_a11y, "-") != 0) { cat_warn[11] = 1; strcpy(cat_note[11], "有 App 開了無障礙服務，請確認是你認得的"); }
+    if (strcmp(sc_lock, "NONE") == 0) { cat_warn[11] = 1; strcpy(cat_note[11], "沒有設定螢幕鎖"); }
+    if (g_locked[0] && strcmp(g_locked, "1") != 0) { cat_warn[11] = 1; strcpy(cat_note[11], "Bootloader 沒有上鎖"); }
 }
 
 /* ================= 第 4 部分：各分頁 ================= */
@@ -3150,6 +3403,8 @@ void page_system(void)
     if (g_patch_days >= 0) printf(" 安全性更新   %s (%d 天前)\n", g_patch, g_patch_days);
     else                   printf(" 安全性更新   %s\n", or_none(g_patch));
     printf(" Bootloader   %s，驗證狀態 %s\n", strcmp(g_locked, "1") == 0 ? "已上鎖" : "未上鎖", or_none(g_verified));
+    note("安全性更新超過 90 天沒更新，比較容易被已知漏洞攻擊");
+    note("Bootloader 上鎖、驗證狀態 green，代表系統是原廠的、沒有被改過");
     if (g_warranty[0]) printf(" Knox 保固    %s\n", strcmp(g_warranty, "0") == 0 ? "正常（沒有刷過機）" : "已觸發（刷過非官方系統）");
     printf(" 抓取時間     %s\n", or_none(g_capture));
     printf(" 已開機       %s\n", or_none(g_uptime));
@@ -3167,6 +3422,7 @@ void page_cpu(void)
     if (g_freq_max > 0) {
         printf(" 頻率範圍     %ld MHz ～ %.1f GHz (第一組核心)\n", g_freq_min / 1000, g_freq_max / 1000000.0);
         printf(" 休息時間     %ld%% 的時間在低頻率 %s\n", g_time_min * 100 / g_time_total, status(1));
+        note("處理器大部分時間待在低頻率，代表平常沒有東西一直在背景耗電；低於 30% 會標示注意");
     }
     printf(" 螢幕         %s %d x %d\n", g_oled ? "OLED" : "", g_w, g_h);
     printf(" 更新率       最高 %.0f Hz", g_max_hz);
@@ -3225,6 +3481,8 @@ void page_parts(void)
 
     ex_amp_line();
     if (g_wifi_chip[0]) printf(" Wi-Fi/藍牙 聯發科 %s%s\n", g_wifi_chip, g_wifi7 ? " (Wi-Fi 7)" : "");
+    note("LPDDR 是記憶體規格、UFS 是儲存規格，數字越大越新越快；HS-G 是儲存傳輸的速度檔位");
+    note("鏡頭顯示的是感光元件型號，報告只會記錄用過的鏡頭，可能不完整");
 }
 
 void page_memory(void)
@@ -3254,6 +3512,7 @@ void page_storage(void)
     else                    printf(" 壽命       未記錄\n");
     if (g_preeol >= 0)      printf(" 老化預警   %s\n", g_preeol <= 1 ? "正常" : (g_preeol == 2 ? "警告  [注意]" : "緊急  [注意]"));
     printf(" 讀寫錯誤   %ld 次  %s\n", g_ufs_err, g_ufs_err > 0 ? "[注意]" : "[正常]");
+    note("壽命是儲存晶片自己回報的磨損程度，以 10% 為一級；讀寫錯誤不是 0 的話建議先備份資料");
     ex_storage_more();
 }
 
@@ -3266,6 +3525,7 @@ void page_battery(void)
     if (g_cycle >= 0) printf(" 充放電次數    %d 次   %s\n", g_cycle, g_cycle > 800 ? "[注意]" : "[正常]");
     if (g_cycle_note[0]) printf("               %s\n", g_cycle_note);
     if (strlen(g_first_use) == 8) printf(" 開始使用      %.4s-%.2s-%.2s\n", g_first_use, g_first_use + 4, g_first_use + 6);
+    note("健康度是電池現在能充滿的容量和全新時的比例，低於 80% 建議換電池；用掉 100% 的電算一次充放電");
     ex_battery_now();
     if (g_cv <= 0 && g_sd_min <= 0) return;     /* 沒有電壓資料，就不顯示 */
     printf("\n ---- 這顆電池的電壓範圍 ----\n");
@@ -3300,6 +3560,7 @@ void page_network(void)
             for (i = g_nwev - 1; i >= 0; i--) printf("     %s  %s\n", wev[i].time, wev[i].text);
         }
     }
+    if (g_wifi_n > 0) note("訊號 dBm 越接近 0 越強：-50 以上很好、-70 普通、-80 以下很弱；Mbps 是每秒傳多少百萬位元");
     if (strcmp(g_sim[0], "ABSENT") == 0 && strcmp(g_sim[1], "ABSENT") == 0) printf(" SIM     未插卡\n");
     else if (g_sim[0][0] || g_sim[1][0]) printf(" SIM     卡槽 1: %s  卡槽 2: %s\n", or_none(g_sim[0]), or_none(g_sim[1]));
     else printf(" SIM     未記錄\n");
@@ -3328,6 +3589,7 @@ void page_freeze(void)
         printf("   有訊息時被叫醒 %d 次\n\n", fz_packet[w]);
     }
     if (cat_warn[6]) printf(" 建議: 把 Google Play 服務、LINE、Messenger 的省電策略改成「無限制」\n");
+    note("背景凍結是系統把沒在用的 App 暫停來省電，凍結太久會讓推播延遲");
 }
 
 void page_stability(void)
@@ -3338,6 +3600,7 @@ void page_stability(void)
     printf(" 底層崩潰          %d 次   %s\n", g_nnative, g_nnative ? "[注意]" : "[正常]");
     printf(" 系統崩潰          %d 次   %s\n", g_nsys, g_nsys ? "[注意]" : "[正常]");
     printf(" App 卡死 (ANR)    %d 次   %s\n", g_nanr, g_nanr ? "[注意]" : "[正常]");
+    note("閃退是 App 突然關掉；卡死 (ANR) 是 App 超過 5 秒沒反應；底層崩潰是用 C/C++ 寫的程式崩潰；系統崩潰是整個系統出錯");
     if (g_nprob > 0) {
         printf("\n ---- 詳細 ----\n");
         for (i = 0; i < g_nprob; i++) printf(" %s  %-8s %s\n", probs[i].time, probs[i].kind, probs[i].name);
@@ -3385,6 +3648,7 @@ void page_errors(void)
     printf(" F 致命      %ld 行  %s\n", g_f, g_f ? "[注意]" : "");
     printf(" 黑名單排除  %ld 行 (%d 種系統雜訊)\n", g_black, blacklist_n);
     printf(" 剩下要看的  %ld 行\n\n", g_kept);
+    note("E 是錯誤、F 是嚴重錯誤。大部分是 App 或系統的雜訊，不一定代表手機有問題");
     printf(" 詳細內容已存到 important.txt\n");
 }
 
@@ -3399,6 +3663,7 @@ void ex_system_more(void)
     if (x_build_date[0]) printf(" 系統編譯日期 %s\n", x_build_date);
     if (x_kernel[0])     printf(" 核心版本     Linux %s\n", x_kernel);
     if (x_baseband[0])   printf(" 基頻版本     %s\n", x_baseband);
+    if (x_kernel[0] || x_baseband[0]) note("核心是系統最底層、管理硬體的程式；基頻是控制行動網路晶片的韌體");
     if (x_gms[0])        printf(" Google 服務  %s\n", x_gms);
     if (x_region[0]) {
         const char *r = x_region;
@@ -3428,6 +3693,8 @@ void ex_cpu_more(void)
     }
     if (xdp_density > 0) printf(" 像素密度     %.0f ppi (系統顯示密度 %d dpi)\n", xdp_dpi, xdp_density);
     if (xdp_hdr[0])      printf(" HDR 格式     %s\n", xdp_hdr);
+    if (xdp_density > 0) note("ppi 是每英吋有幾個像素，越高越細緻；dpi 是系統排版用的密度，和實際像素不同");
+    if (xdp_hdr[0]) note("HDR 讓影片的亮部、暗部細節更多，要影片本身也支援才看得到差別");
 }
 
 /* 記憶體頁加上的項目 */
@@ -3438,6 +3705,7 @@ void ex_memory_more(void)
         long used = xm_swap_total - xm_swap_free;
         printf(" 虛擬記憶體 已用 %.1f / %.1f GB (%ld%%)%s\n", used / 1024.0 / 1024.0, xm_swap_total / 1024.0 / 1024.0,
                used * 100 / xm_swap_total, used * 100 / xm_swap_total >= 95 ? "  快滿了，背景 App 容易被關" : "");
+        note("虛擬記憶體是把不常用的資料壓縮起來放，記憶體不夠時用的，快滿代表記憶體很吃緊");
     }
 }
 
@@ -3573,6 +3841,7 @@ void page_thermal(void)
     if (!any && xb_temp != -9999) { printf(" 電池       %.1f°C\n", xb_temp / 10.0); any = 1; }
     if (!any) printf(" 沒有記錄\n");
     if (xt_status >= 0 && xt_status <= 6) printf("\n 發熱等級   %d (%s)%s\n", xt_status, st[xt_status], xt_status >= 2 ? "  [注意]" : "");
+    note("發熱等級 0 是正常，2 以上系統會降低效能來降溫；訊號放大器是行動網路的發射元件");
 }
 
 /* 感測器頁 */
@@ -3581,7 +3850,9 @@ void page_sensors(void)
     int i;
     printf("\n=========== 感測器 ===========\n");
     if (xs_total == 0) { printf(" 沒有記錄\n"); return; }
-    printf(" 系統一共回報 %d 個感測器 (含軟體算出來的)\n\n", xs_total);
+    printf(" 系統一共回報 %d 個感測器 (含軟體算出來的)\n", xs_total);
+    note("下面只列實體感測器，括號裡是晶片廠商");
+    printf("\n");
     for (i = 0; i < xs_n; i++) {
         printf(" %s\n", sensor_cn(xs[i].type));
         printf("   %s  (%s)\n", xs[i].name, xs[i].vendor);
@@ -3597,6 +3868,7 @@ void page_audio(void)
     ex_amp_line();
     if (xa_chip[0] == '\0' && g_amp[0] == '\0' && xa_haptic[0] == '\0') printf(" 報告裡沒有記錄喇叭和震動的晶片\n");
     printf("\n 報告裡沒有喇叭本身的尺寸、瓦數等規格，只有控制晶片\n");
+    note("喇叭放大器負責把聲音放大推動喇叭；震動馬達晶片控制觸感回饋，好的晶片震感比較清脆");
 }
 
 /* 藍牙頁 */
@@ -3673,6 +3945,7 @@ void page_apps(void)
     n = top_k(nt_n, 10, key_nt, idx);
     if (n > 0) {
         printf("\n ---- 開機以來網路用量最多 (Wi-Fi + 行動網路) ----\n");
+        note("上傳加下載的總量，重新開機後會歸零");
         for (i = 0; i < n; i++) {
             bytes_text(nt[idx[i]].rx + nt[idx[i]].tx, a);
             uid_num_label(nt[idx[i]].uid, lab);
@@ -3727,6 +4000,7 @@ void page_power(void)
             uid_label(xp[idx[i]].uid, lab);
             printf(" %2d. %6.0f mAh  %s\n", i + 1, xp[idx[i]].mah, lab);
         }
+        note("mAh 是系統估算用掉的電量；Android 系統和系統核心排前面是正常的");
     }
 
     if (wl_n > 0) {
@@ -3742,6 +4016,7 @@ void page_power(void)
 
     if (wr_n > 0) {
         printf("\n ---- 叫醒手機最多次的原因 ----\n");
+        note("手機休眠時被硬體叫醒的原因，次數很多會讓待機耗電變快");
         for (i = 0; i < wr_n; i++)
         {
             printf(" %2d. %6ld 次  %s\n", i + 1, wr[i].times, wake_reason_cn(wr[i].name));
@@ -3780,6 +4055,7 @@ void page_charge(void)
         printf("\n ---- 掉電最快的時段 ----\n");
         for (i = 0; i < n; i++) printf(" %s 點那一小時  掉了 %d%%\n", dh[idx[i]].key, dh[idx[i]].drop);
     }
+    note("掉電最快的時段通常是在玩遊戲、看影片、開導航，或訊號很差的時候");
     printf("\n ---- 最近幾次充電 ----\n");
     if (cs_n == 0) printf(" 這段期間沒有充電\n");
     for (i = cs_n - 1; i >= 0; i--) {
@@ -3798,6 +4074,7 @@ void page_perm(void)
     int c, i, k, any = 0, shown, used[1200];
     printf("\n========== 權限使用 ==========\n");
     printf(" (最近用過這些權限的 App，新的在前面)\n");
+    note("系統 App（名字是 com.android、com.miui、com.samsung 等開頭的）用位置、聯絡人是正常的，要留意的是你不認得的 App");
     for (c = 0; c < perm_cat_n; c++) {
         shown = 0;
         for (i = 0; i < pu_n; i++) used[i] = 0;
@@ -3833,6 +4110,207 @@ void page_gnss(void)
     if (gn_cn0 > 0) printf(" 衛星訊號平均   %.0f dB-Hz %s\n", gn_cn0, gn_cn0 >= 30 ? "(良好)" : gn_cn0 >= 20 ? "(普通)" : "(偏弱)");
     if (gn_l5 >= 0) printf(" 雙頻定位 (L5)  %s\n", gn_l5 > 0 ? "支援，有在使用" : "這段期間沒用到");
     if (gn_const[0]) printf(" 用到的衛星系統 %s\n", gn_const);
+    note("首次定位是打開定位後多快找到位置；dB-Hz 是衛星訊號強度，30 以上算好");
+    note("L5 雙頻定位在高樓多的地方比較準；GPS 是美國、GLONASS 俄羅斯、BEIDOU 中國、GALILEO 歐洲、QZSS 日本的衛星");
+}
+
+/* ================= 第 6 部分：安全、設定、效能、通知、進階數據 ================= */
+
+/* 白話說明（App 的一般模式會藏起來，專業模式才顯示） */
+void note(const char *s) { printf(" ※ %s\n", s); }
+
+double key_nf(int i)  { return (double)nf[i].n; }
+double key_cam(int i) { return (double)cam[i].n; }
+
+/* 安全檢查頁 */
+void page_security(void)
+{
+    char lab[160], a11y[512], *p, *q;
+    int i;
+    printf("\n========== 安全檢查 ==========\n");
+
+    if (sc_lock[0]) {
+        const char *t = sc_lock;
+        if (strcmp(sc_lock, "PIN") == 0) t = "PIN 數字密碼";
+        else if (strcmp(sc_lock, "PASSWORD") == 0) t = "文字密碼";
+        else if (strcmp(sc_lock, "PATTERN") == 0) t = "圖形解鎖";
+        else if (strcmp(sc_lock, "NONE") == 0) t = "沒有設定  [注意]";
+        printf(" 螢幕鎖         %s\n", t);
+    }
+    if (sc_fp_n >= 0) printf(" 指紋           登錄了 %d 個，解鎖通過 %d 次、失敗 %d 次\n", sc_fp_n, sc_fp_ok, sc_fp_ng);
+    if (sc_face_n >= 0) printf(" 臉部辨識       %s\n", sc_face_n > 0 ? "已登錄" : "沒有登錄");
+    if (sc_face_n > 0) printf("                解鎖通過 %d 次、失敗 %d 次\n", sc_face_ok, sc_face_ng);
+    note("通過、失敗次數是系統從上次重開機以來的統計");
+
+    printf("\n ---- 開了「無障礙服務」的 App ----\n");
+    if (sc_a11y[0] == '\0' || strcmp(sc_a11y, "-") == 0) printf(" 沒有\n");
+    else {
+        strcpy(a11y, sc_a11y);
+        p = a11y;
+        while (p && *p) {
+            q = strchr(p, ':');
+            if (q != NULL) *q = '\0';
+            if (strchr(p, '/') != NULL) *strchr(p, '/') = '\0';
+            app_label(p, lab);
+            printf(" %s  [注意]\n", lab);
+            p = q ? q + 1 : NULL;
+        }
+    }
+    note("無障礙服務可以看到螢幕上所有內容、替你點擊和輸入，詐騙或惡意 App 常要求這個權限。不認得的請到「設定 → 無障礙」關掉");
+
+    printf("\n ---- 裝置管理員 App ----\n");
+    if (sc_admin_n == 0) printf(" 沒有\n");
+    for (i = 0; i < sc_admin_n; i++) { app_label(sc_admin[i], lab); printf(" %s\n", lab); }
+    note("裝置管理員可以鎖定、清除手機，也比較難被移除。廠商內建的（例如三星 KnoxGuard 分期付款鎖）是正常的");
+
+    printf("\n ---- 可以「安裝未知來源 App」的 App ----\n");
+    if (sc_install_n == 0) printf(" 沒有\n");
+    for (i = 0; i < sc_install_n; i++) { app_label(sc_install[i], lab); printf(" %s\n", lab); }
+    note("這些 App 可以自己下載並安裝其他 App。瀏覽器、檔案管理、應用商店有這個權限是常見的，其他的要留意");
+
+    printf("\n ---- 網路安全 ----\n");
+    if (sc_dns_mode[0]) {
+        if (strcmp(sc_dns_mode, "hostname") == 0) printf(" 私人 DNS      指定 %s\n", sc_dns_host);
+        else if (strcmp(sc_dns_mode, "off") == 0) printf(" 私人 DNS      關閉\n");
+        else printf(" 私人 DNS      自動\n");
+        note("私人 DNS 會把查詢網址的過程加密，避免被偷看或竄改");
+    }
+    printf(" 永遠開啟的 VPN %s\n", sc_vpn[0] ? sc_vpn : "沒有設定");
+    if (sc_unknown_src >= 0) printf(" 舊版「未知來源」總開關  %s\n", sc_unknown_src ? "開啟" : "關閉");
+    printf(" USB 偵錯       %s\n", g_adb == 1 ? "開啟" : "關閉");
+    printf(" 無線偵錯       %s\n", g_adb_wifi == 1 ? "開啟  [注意]" : "關閉");
+    printf(" Bootloader     %s\n", strcmp(g_locked, "1") == 0 ? "已上鎖" : "未上鎖  [注意]");
+    note("Bootloader 解鎖代表可以刷入非官方系統，手機被偷時資料比較不安全");
+}
+
+/* 設定狀態頁 */
+void page_settings(void)
+{
+    char lab[160];
+    int i;
+    printf("\n========== 設定狀態 ==========\n");
+    if (st_bright >= 0) printf(" 螢幕亮度       %d%s\n", st_bright, st_bright_auto == 1 ? " (自動亮度開啟)" : st_bright_auto == 0 ? " (自動亮度關閉)" : "");
+    note("亮度的數字範圍每家不一樣（常見是 0～255），只能和同一支手機比");
+    if (st_timeout > 0) {
+        if (st_timeout >= 60000) printf(" 自動關閉螢幕   %ld 分鐘\n", st_timeout / 60000);
+        else printf(" 自動關閉螢幕   %ld 秒\n", st_timeout / 1000);
+    }
+    if (st_font > 0) printf(" 字體大小       %.0f%%\n", st_font * 100);
+    if (st_night >= 0) printf(" 深色模式       %s\n", st_night == 2 ? "開啟" : st_night == 1 ? "關閉" : st_night == 0 ? "自動" : "自訂時間");
+    if (st_anim >= 0 || st_trans >= 0 || st_win >= 0)
+        printf(" 動畫速度       %.1fx / %.1fx / %.1fx\n", st_win < 0 ? 1 : st_win, st_trans < 0 ? 1 : st_trans, st_anim < 0 ? 1 : st_anim);
+    note("動畫速度是「視窗 / 轉場 / 動畫時間」的倍率，0.5x 會感覺比較快，1.0x 是預設");
+    if (st_low_power >= 0) printf(" 省電模式       %s\n", st_low_power ? "開啟" : "關閉");
+    if (st_zen >= 0) printf(" 勿擾模式       %s\n", st_zen == 0 ? "關閉" : st_zen == 1 ? "只收重要通知" : st_zen == 2 ? "完全靜音" : "只有鬧鐘");
+
+    printf("\n ---- 不受電池最佳化限制的 App ----\n");
+    if (st_white_n == 0) printf(" 沒有記錄\n");
+    for (i = 0; i < st_white_n; i++) { app_label(st_white[i], lab); printf(" %s\n", lab); }
+    note("這些 App 在背景比較不會被省電機制限制。LINE、Messenger 推播常延遲的話，可以把它們加進來");
+}
+
+/* 效能頁 */
+void page_perf(void)
+{
+    char a[32], lab[160];
+    int i;
+    printf("\n============ 效能 ============\n");
+    if (mi_total > 0) {
+        printf(" ---- 記憶體分配 (抓取當下) ----\n");
+        bytes_text(mi_total * 1024.0, a); printf(" 總共       %s%s%s\n", a, mi_status[0] ? "  狀態 " : "", mi_status);
+        if (mi_used >= 0) { bytes_text(mi_used * 1024.0, a); printf(" 使用中     %s\n", a); }
+        if (mi_free >= 0) { bytes_text(mi_free * 1024.0, a); printf(" 可釋放     %s\n", a); }
+        if (mi_lost > 0)  { bytes_text(mi_lost * 1024.0, a); printf(" 無法統計   %s\n", a); }
+        if (mi_zram > 0)  {
+            bytes_text(mi_zram * 1024.0, a);
+            printf(" 壓縮記憶體 實際佔用 %s", a);
+            if (mi_swap_used > 0) { bytes_text(mi_swap_used * 1024.0, a); printf("，存了 %s 的資料", a); }
+            printf("\n");
+        }
+        note("「可釋放」是快取，需要時系統會自動清掉，所以數字小不代表不夠用");
+        note("壓縮記憶體 (ZRAM) 把不常用的資料壓縮起來，用處理器換空間；狀態 low 代表記憶體比較緊");
+    }
+    if (pm_n > 0) {
+        printf("\n ---- 佔用記憶體最多的程式 ----\n");
+        for (i = 0; i < pm_n; i++) {
+            bytes_text(pm[i].val * 1024.0, a);
+            if (strcmp(pm[i].name, "system") == 0) strcpy(lab, "Android 系統");
+            else app_label(pm[i].name, lab);
+            printf(" %2d. %-8s %s\n", i + 1, a, lab);
+        }
+        note(strcmp(pm_title, "RSS") == 0 ? "RSS 是程式實際佔用的記憶體，共用的部分會重複計算" : "PSS 是程式實際佔用的記憶體，共用的部分按比例分攤");
+    }
+    if (pc_n > 0) {
+        printf("\n ---- 抓取當下最吃處理器的程式 ----\n");
+        if (pc_load[0]) printf(" 系統負載 %s\n", pc_load);
+        for (i = 0; i < pc_n; i++) {
+            app_label(pc[i].name, lab);
+            printf(" %2d. %5.1f%%  %s\n", i + 1, pc[i].val, lab);
+        }
+        note("百分比是這幾秒內佔用的處理器，多核心手機加起來可以超過 100%");
+        note("系統負載是過去 1 / 5 / 15 分鐘平均有多少工作在排隊，和核心數差不多算正常");
+    }
+}
+
+/* 通知與相機頁 */
+void page_notify(void)
+{
+    char lab[160];
+    int i, n, idx[10], total = 0;
+    printf("\n========= 通知與相機 =========\n");
+    printf(" ---- 通知欄裡的通知 (抓取當下) ----\n");
+    for (i = 0; i < nf_n; i++) total += nf[i].n;
+    if (total == 0) printf(" 沒有\n");
+    else printf(" 共 %d 則\n", total);
+    n = top_k(nf_n, 10, key_nf, idx);
+    for (i = 0; i < n; i++) { app_label(nf[idx[i]].name, lab); printf(" %3d 則  %s\n", nf[idx[i]].n, lab); }
+    note("只統計數量，不會顯示通知內容");
+
+    printf("\n ---- 最近開過相機的 App ----\n");
+    n = top_k(cam_n, 10, key_cam, idx);
+    if (n == 0) printf(" 沒有記錄\n");
+    for (i = 0; i < n; i++) { app_label(cam[idx[i]].name, lab); printf(" %3d 次  %s\n", cam[idx[i]].n, lab); }
+    note("臉部解鎖也會開前鏡頭，所以解鎖程式（例如 com.miui.face）次數多是正常的");
+}
+
+/* 進階數據頁（專業） */
+void page_advanced(void)
+{
+    char a[48];
+    int i;
+    long total = 0;
+    printf("\n========== 進階數據 ==========\n");
+    if (cf_n > 0) {
+        printf(" ---- 第一組處理器核心各頻率的時間 ----\n");
+        for (i = 0; i < cf_n; i++) total += cf_t[i];
+        for (i = 0; i < cf_n; i++) {
+            if (total <= 0 || cf_t[i] * 1000 / total < 5) continue;       /* 不到 0.5% 的不列 */
+            printf(" %5ld MHz  %4.1f%%\n", cf_f[i] / 1000, cf_t[i] * 100.0 / total);
+        }
+        note("處理器會依工作量自動調頻率，低頻率時間越多越省電。不到 0.5% 的頻率不列出");
+    }
+    if (kw_n > 0) {
+        printf("\n ---- 核心喚醒鎖 (Kernel wakelock) ----\n");
+        for (i = 0; i < kw_n; i++) {
+            dur_text(kw[i].dur, a);
+            printf(" %2d. %-14s %ld 次  %.50s\n", i + 1, a, kw[i].times, kw[i].name);
+        }
+        note("這是驅動程式層級「先別睡」的要求，比 App 的喚醒鎖更底層。Wi-Fi、行動網路、藍牙的名字常出現在這裡");
+    }
+    if (tz_n > 0) {
+        printf("\n ---- 所有溫度感測器 (最近一次通知的值) ----\n");
+        for (i = 0; i < tz_n; i++) printf(" %-16s %.1f°C\n", tz[i].name, tz[i].v);
+        note("這是系統最近一次記錄到的溫度，不一定是抓報告當下的溫度");
+    }
+    if (cf_n == 0 && kw_n == 0 && tz_n == 0) printf(" 沒有記錄\n");
+}
+
+/* 原始資料頁（手機版另外做成可以點開的清單，這裡只列區段數量） */
+void page_raw_summary(void)
+{
+    printf("\n========== 原始資料 ==========\n");
+    printf(" 報告一共有 %d 個區段\n", rs_n);
+    note("專業模式可以點開每個區段看原文。原文已遮掉常見的個人資料，但仍可能有漏網之魚，請不要截圖分享");
 }
 
 /* ================= 主程式 ================= */
@@ -4010,6 +4488,11 @@ int main()
         printf("20. 充電紀錄\n");
         printf("21. 權限使用\n");
         printf("22. 定位 (GPS)\n");
+        printf("23. 安全檢查      %s\n", status(11));
+        printf("24. 設定狀態\n");
+        printf("25. 效能\n");
+        printf("26. 通知與相機\n");
+        printf("27. 進階數據\n");
         printf(" 0. 離開\n");
         printf("請選擇:");
         if (scanf("%d", &choice) != 1) break;
@@ -4037,6 +4520,11 @@ int main()
         else if (choice == 20) page_charge();
         else if (choice == 21) page_perm();
         else if (choice == 22) page_gnss();
+        else if (choice == 23) page_security();
+        else if (choice == 24) page_settings();
+        else if (choice == 25) page_perf();
+        else if (choice == 26) page_notify();
+        else if (choice == 27) page_advanced();
         else { printf("沒有這個選項\n"); continue; }
         wait_enter();
     }
@@ -4047,6 +4535,64 @@ int main()
 #ifdef __ANDROID__
 /* ================= 手機版：給 App 呼叫 ================= */
 #include <jni.h>
+
+/* 原始資料：區段名稱 → 白話說明；*priv = 1 表示這段多半是個人資料，不提供原文 */
+const char *sec_key[] = {
+    "SYSTEM PROPERTIES", "SYSTEM LOG", "EVENT LOG", "STATS LOG", "LAST LOGCAT", "KERNEL LOG", "LAST KMSG", "MEMORY INFO",
+    "CPU INFO", "PROCRANK", "UPTIME", "KERNEL CPUFREQ", "INTERRUPTS", "LSMOD", "PROCESSES AND THREADS", "FILESYSTEMS",
+    "DISK", "NETWORK", "IPTABLES", "BLOCKED", "VM TRACES", "ANR", "TOMBSTONE", "PRINTENV", "BINDER", "LIBRARY",
+    "POWEROFF", "UFS", "PL_LK", "LOG STATISTICS", "PSI", "ZONEINFO", "VMSTAT", "SLAB", "PAGETYPEINFO", "BUDDYINFO",
+    "batterystats", "battery", "meminfo", "cpuinfo", "package", "usagestats", "appops", "alarm", "jobscheduler",
+    "power", "deviceidle", "display", "SurfaceFlinger", "window", "input", "audio", "media.camera", "camera",
+    "sensorservice", "thermalservice", "bluetooth", "connectivity", "netstats", "netpolicy", "settings", "dropbox",
+    "lock_settings", "fingerprint", "face", "biometric", "device_policy", "diskstats", "storaged", "vibrator", "nfc",
+    "uimode", "accessibility", "activity", "procstats", "gfxinfo", "graphicsstats", "dbinfo", "permission", "role",
+    "greezer", "android.hardware", "vendor."
+};
+const char *sec_cn[] = {
+    "系統參數：型號、版本、各種開關", "系統紀錄 (logcat)：最近發生的所有事情", "事件紀錄：App 啟動、關閉等事件", "統計紀錄",
+    "上一次開機的系統紀錄", "核心紀錄 (dmesg)：硬體和驅動程式的訊息", "上一次開機的核心紀錄", "記憶體 (/proc/meminfo)",
+    "處理器使用率", "各程式佔用的記憶體", "開機多久、系統負載", "處理器各頻率的時間", "硬體中斷次數", "載入的驅動程式",
+    "執行中的程式和執行緒", "檔案系統", "儲存空間", "網路介面和連線", "防火牆規則", "卡住的程式", "App 卡死時的程式狀態",
+    "App 卡死 (ANR) 紀錄", "底層崩潰紀錄", "環境變數", "程式之間的通訊 (Binder)", "程式庫",
+    "關機原因", "儲存晶片 (UFS)", "開機程式紀錄", "紀錄緩衝區統計", "資源壓力 (PSI)", "記憶體區域", "虛擬記憶體統計",
+    "核心記憶體配置", "記憶體分頁", "記憶體碎片",
+    "耗電統計：各 App 耗電、喚醒、充電歷史", "電池目前狀態", "各程式記憶體使用", "處理器使用率", "已安裝的 App 和權限",
+    "App 使用時間", "權限使用紀錄", "鬧鐘和定時工作", "背景工作排程", "電源和休眠", "省電模式 (Doze)", "螢幕和顯示",
+    "畫面合成 (SurfaceFlinger)", "視窗", "輸入裝置 (觸控、按鍵)", "音訊", "相機服務", "相機", "感測器", "溫度",
+    "藍牙", "網路連線", "網路流量", "網路限制政策", "系統設定", "系統錯誤報告 (Dropbox)", "螢幕鎖", "指紋", "臉部辨識",
+    "生物辨識", "裝置管理", "儲存空間用量", "儲存讀寫統計", "震動", "NFC", "介面模式 (深色模式等)", "無障礙服務",
+    "App 和活動狀態", "程式執行統計", "畫面流暢度", "畫面流暢度統計", "資料庫", "權限", "預設 App 角色",
+    "小米背景凍結 (Greezer)", "硬體介面 (HAL)", "廠商自己的服務"
+};
+const char *sec_priv[] = {
+    "account", "contact", "isms", "sms", "iphonesubinfo", "telephony", "clipboard", "location", "notification",
+    "wifi", "content", "credential", "people", "autofill", "carrier", "imms", "RADIO LOG", "calendar", "keychain",
+    "phone", "voicemail", "dumpsys bugreport", "SEARCH", "search"
+};
+
+const char *section_note(const char *name, int *priv)
+{
+    int i, n = sizeof(sec_key) / sizeof(sec_key[0]), np = sizeof(sec_priv) / sizeof(sec_priv[0]);
+    *priv = 0;
+    for (i = 0; i < np; i++) if (strstr(name, sec_priv[i]) != NULL) { *priv = 1; break; }
+    for (i = 0; i < n; i++) if (strstr(name, sec_key[i]) != NULL) return sec_cn[i];
+    return "";
+}
+
+/* sections.txt：第一行是「檔案路徑<TAB>大小」，之後每行「開始<TAB>結束<TAB>種類<TAB>名稱<TAB>隱私<TAB>說明」 */
+void write_sections(void)
+{
+    int i, priv;
+    long end;
+    const char *n;
+    printf("%s\t%ld\n", rs_path, rs_file_size);
+    for (i = 0; i < rs_n; i++) {
+        end = (i + 1 < rs_n) ? rs[i + 1].start : rs_file_size;
+        n = section_note(rs[i].name, &priv);
+        printf("%ld\t%ld\t%c\t%s\t%d\t%s\n", rs[i].start, end, rs[i].kind, rs[i].name, priv, n);
+    }
+}
 
 char g_outdir[1000];
 
@@ -4067,13 +4613,13 @@ JNIEXPORT jdouble JNICALL
 Java_com_example_ov_ReportActivity_totalBytes(JNIEnv *env, jobject thiz) { return g_prog_total; }
 
 /* App 傳進來：檔案路徑（.zip 會先由 App 解壓縮到同名資料夾）、結果要放的資料夾
-   結果：menu.txt（每行「頁名<TAB>狀態」）、p1.txt ～ p22.txt（每一頁的內容） */
+   結果：menu.txt（每行「頁名<TAB>狀態」）、p1.txt ～ p28.txt（每一頁的內容）、sections.txt（原始資料的區段） */
 JNIEXPORT jint JNICALL
 Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jpath, jstring jout)
 {
     char path[1000];
     const char *s;
-    int ok;
+    int ok, i;
 
     s = (*env)->GetStringUTFChars(env, jpath, NULL);
     strncpy(path, s, sizeof(path) - 1); path[sizeof(path) - 1] = '\0';
@@ -4086,56 +4632,75 @@ Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jp
     ok = run_analysis(path);
     if (!ok) { fflush(stdout); return 0; }
 
+    /* menu.txt 每行：分類名稱<TAB>狀態<TAB>1 一般模式就顯示 / 2 只有專業模式顯示 */
     print_to("menu.txt");
-    printf("%s\t%s\n", "總覽", "");
-    printf("%s\t%s\n", "系統", status(0));
-    printf("%s\t%s\n", "處理器與螢幕", status(1));
-    printf("%s\t%s\n", "零件與規格", "");
-    printf("%s\t%s\n", "記憶體", status(2));
-    printf("%s\t%s\n", "儲存空間", status(3));
-    printf("%s\t%s\n", "電池", status(4));
-    printf("%s\t%s\n", "充電紀錄", "");
-    printf("%s\t%s\n", "耗電分析", "");
-    printf("%s\t%s\n", "溫度", status(10));
-    printf("%s\t%s\n", "網路", status(5));
-    printf("%s\t%s\n", "藍牙", "");
-    printf("%s\t%s\n", "定位 (GPS)", "");
-    printf("%s\t%s\n", "感測器", "");
-    printf("%s\t%s\n", "音訊與震動", "");
-    printf("%s\t%s\n", "應用程式", "");
-    printf("%s\t%s\n", "使用時間", "");
-    printf("%s\t%s\n", "權限使用", "");
-    printf("%s\t%s\n", "背景凍結", status(6));
-    printf("%s\t%s\n", "穩定性", status(7));
-    printf("%s\t%s\n", "錯誤訊息", status(8));
-    printf("%s\t%s\n", "歷史紀錄", g_has_hist ? status(9) : "(要選 zip 才有)");
+    printf("%s\t%s\t%d\n", "總覽", "", 1);
+    printf("%s\t%s\t%d\n", "系統", status(0), 1);
+    printf("%s\t%s\t%d\n", "安全檢查", status(11), 1);
+    printf("%s\t%s\t%d\n", "處理器與螢幕", status(1), 1);
+    printf("%s\t%s\t%d\n", "零件與規格", "", 1);
+    printf("%s\t%s\t%d\n", "記憶體", status(2), 1);
+    printf("%s\t%s\t%d\n", "儲存空間", status(3), 1);
+    printf("%s\t%s\t%d\n", "電池", status(4), 1);
+    printf("%s\t%s\t%d\n", "充電紀錄", "", 1);
+    printf("%s\t%s\t%d\n", "耗電分析", "", 2);
+    printf("%s\t%s\t%d\n", "溫度", status(10), 1);
+    printf("%s\t%s\t%d\n", "網路", status(5), 1);
+    printf("%s\t%s\t%d\n", "藍牙", "", 1);
+    printf("%s\t%s\t%d\n", "定位 (GPS)", "", 2);
+    printf("%s\t%s\t%d\n", "感測器", "", 2);
+    printf("%s\t%s\t%d\n", "音訊與震動", "", 2);
+    printf("%s\t%s\t%d\n", "應用程式", "", 1);
+    printf("%s\t%s\t%d\n", "使用時間", "", 1);
+    printf("%s\t%s\t%d\n", "權限使用", "", 1);
+    printf("%s\t%s\t%d\n", "通知與相機", "", 1);
+    printf("%s\t%s\t%d\n", "設定狀態", "", 1);
+    printf("%s\t%s\t%d\n", "效能", "", 2);
+    printf("%s\t%s\t%d\n", "背景凍結", status(6), 2);
+    printf("%s\t%s\t%d\n", "穩定性", status(7), 1);
+    printf("%s\t%s\t%d\n", "錯誤訊息", status(8), 2);
+    printf("%s\t%s\t%d\n", "歷史紀錄", g_has_hist ? status(9) : "(要選 zip 才有)", 1);
+    printf("%s\t%s\t%d\n", "進階數據", "", 2);
+    printf("%s\t%s\t%d\n", "原始資料", "", 2);
 
     print_to("head.txt");
     printf("%s\nAndroid %s\n抓取時間 %s\n", or_none(g_model), or_none(g_android), or_none(g_capture));
 
+    print_to("sections.txt");
+    write_sections();
+
+    print_to("mask.txt");
+    for (i = 0; i < mk_n; i++) printf("%s\n", mk[i]);
+
     /* 每一頁的檔名照上面 menu.txt 的順序：p1.txt、p2.txt ... */
     print_to("p1.txt"); page_overview();
     print_to("p2.txt"); page_system();
-    print_to("p3.txt"); page_cpu();
-    print_to("p4.txt"); page_parts();
-    print_to("p5.txt"); page_memory();
-    print_to("p6.txt"); page_storage();
-    print_to("p7.txt"); page_battery();
-    print_to("p8.txt"); page_charge();
-    print_to("p9.txt"); page_power();
-    print_to("p10.txt"); page_thermal();
-    print_to("p11.txt"); page_network();
-    print_to("p12.txt"); page_bluetooth();
-    print_to("p13.txt"); page_gnss();
-    print_to("p14.txt"); page_sensors();
-    print_to("p15.txt"); page_audio();
-    print_to("p16.txt"); page_apps();
-    print_to("p17.txt"); page_usage();
-    print_to("p18.txt"); page_perm();
-    print_to("p19.txt"); page_freeze();
-    print_to("p20.txt"); page_stability();
-    print_to("p21.txt"); page_errors();
-    print_to("p22.txt"); page_history();
+    print_to("p3.txt"); page_security();
+    print_to("p4.txt"); page_cpu();
+    print_to("p5.txt"); page_parts();
+    print_to("p6.txt"); page_memory();
+    print_to("p7.txt"); page_storage();
+    print_to("p8.txt"); page_battery();
+    print_to("p9.txt"); page_charge();
+    print_to("p10.txt"); page_power();
+    print_to("p11.txt"); page_thermal();
+    print_to("p12.txt"); page_network();
+    print_to("p13.txt"); page_bluetooth();
+    print_to("p14.txt"); page_gnss();
+    print_to("p15.txt"); page_sensors();
+    print_to("p16.txt"); page_audio();
+    print_to("p17.txt"); page_apps();
+    print_to("p18.txt"); page_usage();
+    print_to("p19.txt"); page_perm();
+    print_to("p20.txt"); page_notify();
+    print_to("p21.txt"); page_settings();
+    print_to("p22.txt"); page_perf();
+    print_to("p23.txt"); page_freeze();
+    print_to("p24.txt"); page_stability();
+    print_to("p25.txt"); page_errors();
+    print_to("p26.txt"); page_history();
+    print_to("p27.txt"); page_advanced();
+    print_to("p28.txt"); page_raw_summary();
     fflush(stdout);
     return 1;
 }
