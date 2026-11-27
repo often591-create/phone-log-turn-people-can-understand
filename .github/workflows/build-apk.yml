@@ -78,4 +78,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release delete test-result -y --cleanup-tag || true
+          find test-out -type f -empty -delete
           gh release create test-result test-out/* --prerelease --title "模擬器測試結果" --notes "自動測試用，不用下載"
