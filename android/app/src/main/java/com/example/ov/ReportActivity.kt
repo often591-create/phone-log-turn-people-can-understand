@@ -409,7 +409,7 @@ class ReportActivity : AppCompatActivity() {
 
         val info = TextView(this)
         info.textSize = 14f
-        info.text = "${sec.name}\n${if (sec.note.isNotEmpty()) sec.note else "說明：系統的內部資料"}\n大小 ${sizeText(sec.end - sec.start)}，每次顯示 200 KB"
+        info.text = "${sec.name}\n${if (sec.note.isNotEmpty()) sec.note else "說明：系統的內部資料"}\n大小 ${sizeText(sec.end - sec.start)}，每次顯示 200 KB\n藍色「←」後面是英文詞的中文意思；紅色是錯誤或警告"
         box.addView(info)
 
         val text = TextView(this)
@@ -425,7 +425,7 @@ class ReportActivity : AppCompatActivity() {
         fun load() {
             val len = minOf(chunk, sec.end - pos)
             if (len <= 0) { more.visibility = View.GONE; return }
-            text.append(maskPrivate(readChunk(pos, len), maskWords))
+            text.append(Glossary.annotate(maskPrivate(readChunk(pos, len), maskWords)))
             pos += len
             if (pos >= sec.end) more.visibility = View.GONE
         }
