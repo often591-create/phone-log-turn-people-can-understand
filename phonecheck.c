@@ -324,8 +324,8 @@ double sd_time[200];         /* 關機的時間（秒），用來判斷崩潰是
 int g_nsd = 0;
 
 /* 總覽用：每一頁的狀態 */
-#define CAT_N 10
-const char *cat_name[CAT_N] = {"系統", "處理器與螢幕", "記憶體", "儲存空間", "電池", "網路", "背景凍結", "穩定性", "錯誤訊息", "歷史紀錄"};
+#define CAT_N 11
+const char *cat_name[CAT_N] = {"系統", "處理器與螢幕", "記憶體", "儲存空間", "電池", "網路", "背景凍結", "穩定性", "錯誤訊息", "歷史紀錄", "溫度"};
 int cat_warn[CAT_N];
 char cat_note[CAT_N][128];
 
@@ -1495,6 +1495,558 @@ void vivo_history_page(void)
 }
 
 /* ##################################################################
+ * 6.5 更多資料（每家手機都有的部分）
+ *     溫度、感測器、音訊與震動、藍牙、應用程式、目前電池狀態、
+ *     儲存空間用量、目前 Wi-Fi、行動網路、系統細節、螢幕細節
+ * ################################################################## */
+
+/* 系統細節 */
+char x_baseband[64] = "", x_build_date[48] = "", x_kernel[48] = "", x_locale[24] = "", x_tz[40] = "";
+char x_crypto[16] = "", x_slot[8] = "", x_region[16] = "", x_gms[24] = "";
+char x_sim_op[96] = "", x_net_type[48] = "";
+int x_first_api = -1;
+
+/* 目前電池狀態（dumpsys battery） */
+int xb_level = -1, xb_volt = -1, xb_temp = -9999, xb_status = -1, xb_health = -1;
+long xb_counter = -1;
+char xb_tech[16] = "";
+int xb_ac = 0, xb_usb = 0, xb_wl = 0;
+
+/* 耗電排行（batterystats） */
+int xp_state = 0;                 /* 0 還沒遇到、1 正在讀、2 讀完 */
+long xp_capacity = -1;
+char xp_onbatt[48] = "", xp_screen[48] = "";
+struct PowerUse { char uid[16]; double mah; };
+struct PowerUse xp[400];
+int xp_n = 0;
+
+/* 套件名稱和 uid 的對照 */
+char pk_name[1500][96];
+int pk_uid[1500];
+int pk_n = 0, pk_wait = -1;
+
+/* 儲存空間用量（diskstats） */
+double xd_app = -1, xd_data = -1, xd_cache = -1, xd_photo = -1, xd_video = -1, xd_audio = -1, xd_other = -1;
+long xd_free_kb = -1, xd_write = -1;
+char dn_name[1500][96];
+double dn_size[1500];
+int dn_n = 0;
+
+/* 溫度（thermalservice） */
+double xt[16];
+int xt_status = -1, xt_inhal = 0, xt_done = 0;
+
+/* 感測器 */
+struct SensorInfo { int type; char name[64]; char vendor[24]; };
+struct SensorInfo xs[16];
+int xs_n = 0, xs_state = 0, xs_total = 0;
+
+/* 螢幕細節 */
+int xdp_density = 0;
+double xdp_dpi = 0;
+char xdp_hdr[80] = "";
+double xdp_rates[16];
+int xdp_nrates = 0;
+
+/* 目前的 Wi-Fi 連線 */
+char xw_std[16] = "";
+int xw_rssi = 999, xw_link = -1, xw_freq = -1;
+
+/* 記憶體目前的狀態 */
+long xm_avail = -1, xm_swap_total = -1, xm_swap_free = -1;
+
+/* 藍牙 */
+char xbt_state[16] = "", xbt_name[64] = "";
+int xbt_bonded = -1, xbt_in_bonded = 0, xbt_ndev = 0;
+char xbt_dev[20][64];
+
+/* 音訊與震動 */
+char xa_chip[24] = "", xa_haptic[48] = "";
+char xa_addr[8][16];
+int xa_naddr = 0, xa_aw = 0, xa_stereo = 0;
+
+/* 指紋（三星、vivo 的晶片型號） */
+char x_fp[32] = "";
+
+/* 之後才定義的函式（在各分頁裡呼叫） */
+void ex_system_more(void);
+void ex_cpu_more(void);
+void ex_memory_more(void);
+void ex_storage_more(void);
+void ex_battery_now(void);
+void ex_network_more(void);
+void ex_amp_line(void);
+
+/* ---------------- 小工具 ---------------- */
+
+/* 位元組換成「12.3 GB」 */
+void bytes_text(double b, char *out)
+{
+    if (b >= 1024.0 * 1024 * 1024) sprintf(out, "%.1f GB", b / (1024.0 * 1024 * 1024));
+    else if (b >= 1024.0 * 1024)   sprintf(out, "%.0f MB", b / (1024.0 * 1024));
+    else                           sprintf(out, "%.0f KB", b / 1024.0);
+}
+
+/* 「14h 1m 33s 987ms」或「3d 17h 26m 9s」換成「14 小時 1 分」 */
+void dur_text(const char *s, char *out)
+{
+    long d = 0, h = 0, m = 0, v;
+    const char *p = s;
+    while (*p) {
+        if (!isdigit((unsigned char)*p)) { p++; continue; }
+        v = atol(p);
+        while (isdigit((unsigned char)*p)) p++;
+        if (*p == 'd') d = v;
+        else if (*p == 'h') h = v;
+        else if (*p == 'm' && p[1] != 's') m = v;
+        else if (*p == 's') break;
+        if (*p) p++;
+    }
+    if (d > 0) sprintf(out, "%ld 天 %ld 小時 %ld 分", d, h, m);
+    else if (h > 0) sprintf(out, "%ld 小時 %ld 分", h, m);
+    else sprintf(out, "%ld 分", m);
+}
+
+/* 加一個鏡頭感光元件（轉成大寫、不重複） */
+void add_cam(const char *name)
+{
+    char up[16];
+    int i;
+    for (i = 0; name[i] && i < 15; i++) up[i] = toupper((unsigned char)name[i]);
+    up[i] = '\0';
+    if (up[0] == '\0') return;
+    for (i = 0; i < g_ncam; i++) if (strcmp(g_cams[i], up) == 0) return;
+    if (g_ncam < 8) strcpy(g_cams[g_ncam++], up);
+}
+
+/* 常見 App 的中文名字 */
+const char *app_pkg[] = {
+    "com.google.android.gms", "com.android.vending", "com.google.android.youtube", "com.android.chrome",
+    "jp.naver.line.android", "com.facebook.katana", "com.facebook.orca", "com.instagram.android",
+    "com.tencent.mm", "com.tencent.mobileqq", "com.ss.android.ugc.aweme", "com.zhiliaoapp.musically",
+    "tv.danmaku.bili", "com.whatsapp", "org.telegram.messenger", "com.google.android.apps.maps",
+    "com.google.android.apps.photos", "com.spotify.music", "com.netflix.mediaclient", "com.shopee.tw",
+    "com.twitter.android", "com.discord", "com.google.android.googlequicksearchbox", "com.miui.home",
+    "com.sec.android.app.launcher", "com.android.systemui", "com.taobao.taobao", "com.eg.android.AlipayGphone",
+    "com.sina.weibo", "com.xingin.xhs", "com.zhihu.android", "com.baidu.BaiduMap",
+    "com.autonavi.minimap", "com.google.android.apps.youtube.music", "com.kuaishou.nebula", "com.tencent.qqlive",
+    "com.netease.cloudmusic", "com.google.android.inputmethod.latin", "com.android.camera", "com.android.settings"
+};
+const char *app_cn[] = {
+    "Google Play 服務", "Play 商店", "YouTube", "Chrome",
+    "LINE", "Facebook", "Messenger", "Instagram",
+    "微信", "QQ", "抖音", "TikTok",
+    "嗶哩嗶哩", "WhatsApp", "Telegram", "Google 地圖",
+    "Google 相簿", "Spotify", "Netflix", "蝦皮購物",
+    "X (Twitter)", "Discord", "Google", "小米桌面",
+    "三星桌面", "系統介面", "淘寶", "支付寶",
+    "微博", "小紅書", "知乎", "百度地圖",
+    "高德地圖", "YouTube Music", "快手", "騰訊視頻",
+    "網易雲音樂", "Gboard 鍵盤", "相機", "設定"
+};
+int app_n = 40;
+
+/* 套件名稱 → 顯示用的名字 */
+void app_label(const char *pkg, char *out)
+{
+    int i;
+    for (i = 0; i < app_n; i++) {
+        if (strcmp(pkg, app_pkg[i]) == 0) { sprintf(out, "%s (%s)", app_cn[i], pkg); return; }
+    }
+    strcpy(out, pkg);
+}
+
+/* 耗電排行的 uid（u0a357、1000）→ 名字 */
+void uid_label(const char *uid, char *out)
+{
+    int n, i;
+    char tmp[160];
+    if (uid[0] == 'u' && uid[1] == '0' && uid[2] == 'a') {
+        n = 10000 + atoi(uid + 3);
+        for (i = 0; i < pk_n; i++) {
+            if (pk_uid[i] == n) { app_label(pk_name[i], tmp); sprintf(out, "%.90s", tmp); return; }
+        }
+        sprintf(out, "App (uid %d)", n);
+        return;
+    }
+    if (!isdigit((unsigned char)uid[0])) { strcpy(out, uid); return; }
+    n = atoi(uid);
+    if (n == 0) strcpy(out, "系統核心");
+    else if (n == 1000) strcpy(out, "Android 系統");
+    else if (n == 1001) strcpy(out, "電話服務");
+    else if (n == 1002) strcpy(out, "藍牙");
+    else if (n == 1010) strcpy(out, "Wi-Fi");
+    else if (n == 1013) strcpy(out, "媒體服務");
+    else if (n == 1021) strcpy(out, "定位 (GPS)");
+    else if (n == 1027) strcpy(out, "NFC");
+    else if (n == 1041) strcpy(out, "音訊服務");
+    else if (n == 1046) strcpy(out, "影音編解碼");
+    else if (n == 1047) strcpy(out, "相機服務");
+    else sprintf(out, "系統服務 (uid %d)", n);
+}
+
+/* 感測器種類 → 中文（只列實體感測器） */
+const char *sensor_cn(int type)
+{
+    switch (type) {
+    case 1: return "加速度計";
+    case 2: return "磁力計 (指南針)";
+    case 4: return "陀螺儀";
+    case 5: return "光線感測器";
+    case 6: return "氣壓計";
+    case 8: return "距離感測器";
+    case 12: return "濕度感測器";
+    case 13: return "溫度感測器";
+    case 21: return "心率感測器";
+    }
+    return NULL;
+}
+
+/* 讀 JSON 字串陣列 ["a","b"] 到 dn_name */
+void read_name_array(const char *p)
+{
+    const char *q;
+    int len;
+    dn_n = 0;
+    while ((p = strchr(p, '"')) != NULL && dn_n < 1500) {
+        q = strchr(p + 1, '"');
+        if (q == NULL) break;
+        len = q - (p + 1);
+        if (len > 95) len = 95;
+        strncpy(dn_name[dn_n], p + 1, len);
+        dn_name[dn_n][len] = '\0';
+        dn_size[dn_n] = 0;
+        dn_n++;
+        p = q + 1;
+    }
+}
+
+/* 讀數字陣列 [1,2,3]，加到 dn_size */
+void add_size_array(const char *p)
+{
+    int i = 0;
+    p = strchr(p, '[');
+    if (p == NULL) return;
+    p++;
+    while (*p && *p != ']' && i < dn_n) {
+        dn_size[i] += atof(p);
+        while (*p && *p != ',' && *p != ']') p++;
+        if (*p == ',') p++;
+        i++;
+    }
+}
+
+/* ---------------- 讀檔時每一行 ---------------- */
+
+void ex_line(const char *section, const char *service)
+{
+    char *p, *q;
+    char tmp[128];
+    int a, i;
+
+    /* 系統參數 */
+    if (line[0] == '[' && strcmp(section, "SYSTEM PROPERTIES") == 0) {
+        if (get_prop(line, "gsm.version.baseband", x_baseband, sizeof(x_baseband)) && (p = strchr(x_baseband, ',')) != NULL) *p = '\0';
+        get_prop(line, "ro.build.date", x_build_date, sizeof(x_build_date));
+        get_prop(line, "persist.sys.locale", x_locale, sizeof(x_locale));
+        get_prop(line, "persist.sys.timezone", x_tz, sizeof(x_tz));
+        get_prop(line, "ro.crypto.state", x_crypto, sizeof(x_crypto));
+        get_prop(line, "ro.boot.slot_suffix", x_slot, sizeof(x_slot));
+        get_prop(line, "ro.boot.hwc", x_region, sizeof(x_region));
+        get_prop(line, "ro.com.google.gmsversion", x_gms, sizeof(x_gms));
+        get_prop(line, "gsm.sim.operator.alpha", x_sim_op, sizeof(x_sim_op));
+        get_prop(line, "gsm.network.type", x_net_type, sizeof(x_net_type));
+        if (get_prop(line, "ro.product.first_api_level", tmp, sizeof(tmp))) x_first_api = atoi(tmp);
+        if (get_prop(line, "ro.vendor.audio.spk.stereo", tmp, sizeof(tmp)) && strcmp(tmp, "true") == 0) xa_stereo = 1;
+        /* vivo 的鏡頭：[persist.vendor.camera.sensor1]: [s5kjn1] */
+        if (starts_with(line, "[persist.vendor.camera.sensor") && isdigit((unsigned char)line[29]) && line[30] == ']') {
+            copy_until(line + 34, ']', tmp, sizeof(tmp));
+            q = strchr(tmp, '_');
+            if (q != NULL) *q = '\0';           /* imx06c_wide → imx06c */
+            if (strlen(tmp) >= 5 && (starts_with(tmp, "imx") || starts_with(tmp, "s5k") || starts_with(tmp, "ov") ||
+                                     starts_with(tmp, "lyt") || starts_with(tmp, "gc") || starts_with(tmp, "sc") || starts_with(tmp, "hi")))
+                add_cam(tmp);
+        }
+        return;
+    }
+
+    /* 核心版本：Kernel: Linux version 6.6.118-android15-8-... */
+    if (x_kernel[0] == '\0' && starts_with(line, "Kernel: Linux version ")) {
+        copy_until(line + 22, ' ', x_kernel, sizeof(x_kernel));
+        if ((p = strstr(x_kernel, "-g")) != NULL) *p = '\0';      /* 後面是程式碼版本的編號，不用看 */
+        if ((p = strstr(x_kernel, "-ab")) != NULL) *p = '\0';
+    }
+
+    /* 目前電池狀態 */
+    if (strcmp(service, "battery") == 0) {
+        if (xb_level < 0 && starts_with(line, "  level: ")) xb_level = atoi(line + 9);
+        if (xb_volt < 0 && starts_with(line, "  voltage: ")) xb_volt = atoi(line + 11);
+        if (xb_temp == -9999 && starts_with(line, "  temperature: ")) xb_temp = atoi(line + 15);
+        if (xb_status < 0 && starts_with(line, "  status: ")) xb_status = atoi(line + 10);
+        if (xb_health < 0 && starts_with(line, "  health: ")) xb_health = atoi(line + 10);
+        if (xb_counter < 0 && starts_with(line, "  Charge counter: ")) xb_counter = atol(line + 18);
+        if (xb_tech[0] == '\0' && starts_with(line, "  technology: ")) { copy_until(line + 14, '\n', xb_tech, sizeof(xb_tech)); trim(xb_tech); }
+        if (starts_with(line, "  AC powered: true")) xb_ac = 1;
+        if (starts_with(line, "  USB powered: true")) xb_usb = 1;
+        if (starts_with(line, "  Wireless powered: true")) xb_wl = 1;
+    }
+
+    /* 耗電排行 */
+    if (xp_state == 0 && strstr(line, "Estimated power use (mAh):") != NULL) { xp_state = 1; return; }
+    if (xp_state == 1) {
+        if (line[0] != ' ') xp_state = 2;
+        else if (xp_capacity < 0 && (p = strstr(line, "Capacity: ")) != NULL && isdigit((unsigned char)p[10])) xp_capacity = atol(p + 10);
+        else if (starts_with(line, "  UID ") && xp_n < 400 && (p = strchr(line + 6, ':')) != NULL) {
+            a = p - (line + 6);
+            if (a > 15) a = 15;
+            strncpy(xp[xp_n].uid, line + 6, a);
+            xp[xp_n].uid[a] = '\0';
+            xp[xp_n].mah = atof(p + 1);
+            xp_n++;
+        }
+    }
+    if (xp_onbatt[0] == '\0' && starts_with(line, "  Time on battery: ")) copy_until(line + 19, '(', xp_onbatt, sizeof(xp_onbatt));
+    if (xp_screen[0] == '\0' && starts_with(line, "  Screen on: ")) copy_until(line + 13, '(', xp_screen, sizeof(xp_screen));
+
+    /* 套件名稱和 uid 的對照 */
+    if (strcmp(service, "package") == 0) {
+        if (starts_with(line, "  Package [")) {
+            pk_wait = -1;
+            if (pk_n < 1500) {
+                copy_until(line + 11, ']', pk_name[pk_n], 96);
+                pk_wait = pk_n;
+            }
+        } else if (pk_wait >= 0 && ((p = strstr(line, "appId=")) != NULL || (p = strstr(line, "userId=")) != NULL)) {
+            pk_uid[pk_wait] = atoi(strchr(p, '=') + 1);
+            pk_n++;
+            pk_wait = -1;
+        }
+    }
+
+    /* 儲存空間用量 */
+    if (strcmp(service, "diskstats") == 0) {
+        if (starts_with(line, "App Size: ")) xd_app = atof(line + 10);
+        else if (starts_with(line, "App Data Size: ")) xd_data = atof(line + 15);
+        else if (starts_with(line, "App Cache Size: ")) xd_cache = atof(line + 16);
+        else if (starts_with(line, "Photos Size: ")) xd_photo = atof(line + 13);
+        else if (starts_with(line, "Videos Size: ")) xd_video = atof(line + 13);
+        else if (starts_with(line, "Audio Size: ")) xd_audio = atof(line + 12);
+        else if (starts_with(line, "Other Size: ")) xd_other = atof(line + 12);
+        else if (starts_with(line, "Recent Disk Write Speed (kB/s) = ")) xd_write = atol(line + 33);
+        else if (xd_free_kb < 0 && starts_with(line, "Data-Free: ")) xd_free_kb = atol(line + 11);
+        else if (starts_with(line, "Package Names: ")) read_name_array(line + 15);
+        else if (starts_with(line, "App Sizes: ") || starts_with(line, "App Data Sizes: ")) add_size_array(line);
+    }
+
+    /* 溫度 */
+    if (strcmp(service, "thermalservice") == 0 && !xt_done) {
+        if (xt_status < 0 && starts_with(line, "Thermal Status: ")) xt_status = atoi(line + 16);
+        if (starts_with(line, "Current temperatures from HAL:")) { xt_inhal = 1; return; }
+        if (xt_inhal) {
+            double v;
+            int t;
+            if (line[0] == '\t' && (p = strstr(line, "mValue=")) != NULL && (q = strstr(line, "mType=")) != NULL) {
+                v = atof(p + 7);
+                t = atoi(q + 6);
+                if (t >= 0 && t < 16 && v > 0 && v < 150 && v > xt[t]) xt[t] = v;
+            } else {
+                xt_inhal = 0;
+                xt_done = 1;
+            }
+        }
+    }
+
+    /* 感測器 */
+    if (strstr(service, "sensorservice") != NULL && xs_state < 2) {
+        if (starts_with(line, "Sensor List:")) { xs_state = 1; return; }
+        if (xs_state == 1) {
+            if (starts_with(line, "0x") && (p = strstr(line, ") ")) != NULL) {
+                char name[64], vendor[24];
+                int t = -1;
+                xs_total++;
+                copy_until(p + 2, '|', name, sizeof(name));
+                trim(name);
+                q = strstr(name, " Non-wakeup"); if (q != NULL) *q = '\0';
+                q = strstr(name, " Wakeup");     if (q != NULL) *q = '\0';
+                for (i = 0, a = 0; name[i]; i++) {          /* 連續的空白只留一個 */
+                    if (name[i] == ' ' && a > 0 && name[a - 1] == ' ') continue;
+                    name[a++] = name[i];
+                }
+                name[a] = '\0';
+                trim(name);
+                vendor[0] = '\0';
+                q = strchr(p + 2, '|');
+                if (q != NULL) {
+                    q++;
+                    while (*q == ' ') q++;
+                    copy_until(q, '|', vendor, sizeof(vendor));
+                    trim(vendor);
+                }
+                q = strstr(line, "type: ");
+                if (q != NULL && (q = strchr(q, '(')) != NULL) t = atoi(q + 1);
+                if (sensor_cn(t) != NULL && xs_n < 16) {
+                    for (i = 0; i < xs_n; i++) if (xs[i].type == t) break;
+                    if (i == xs_n) {
+                        xs[xs_n].type = t;
+                        strcpy(xs[xs_n].name, name);
+                        strcpy(xs[xs_n].vendor, vendor);
+                        xs_n++;
+                    }
+                }
+            } else if (line[0] != '\t') {
+                xs_state = 2;
+            }
+        }
+    }
+
+    /* 螢幕細節 */
+    if (xdp_hdr[0] == '\0' && (p = strstr(line, "mSupportedHdrTypes=[")) != NULL) {
+        p += 20;
+        tmp[0] = '\0';
+        while (*p && *p != ']') {
+            a = atoi(p);
+            if (tmp[0]) strcat(tmp, "、");
+            if (a == 1) strcat(tmp, "Dolby Vision");
+            else if (a == 2) strcat(tmp, "HDR10");
+            else if (a == 3) strcat(tmp, "HLG");
+            else if (a == 4) strcat(tmp, "HDR10+");
+            while (*p && *p != ',' && *p != ']') p++;
+            if (*p == ',') p++;
+            while (*p == ' ') p++;
+        }
+        strcpy(xdp_hdr, tmp[0] ? tmp : "不支援");
+    }
+    /* 「density 520, 447.02 x 447.02 dpi」或「density 520 (447.02 x 447.02) dpi」 */
+    if (xdp_density == 0 && (p = strstr(line, " density ")) != NULL && isdigit((unsigned char)p[9])) {
+        q = p + 9;
+        while (isdigit((unsigned char)*q)) q++;
+        if ((q[0] == ',' && q[1] == ' ') || (q[0] == ' ' && q[1] == '(')) {
+            xdp_density = atoi(p + 9);
+            xdp_dpi = atof(q + 2);
+        }
+    }
+    if (xdp_nrates == 0 && (p = strstr(line, "supportedRefreshRates [")) != NULL) {
+        p += 23;
+        while (*p && *p != ']') {
+            double r = atof(p);
+            int dup = 0;
+            for (i = 0; i < xdp_nrates; i++) if (xdp_rates[i] > r - 0.5 && xdp_rates[i] < r + 0.5) dup = 1;
+            if (!dup && r > 0 && xdp_nrates < 16) xdp_rates[xdp_nrates++] = r;
+            while (*p && *p != ',' && *p != ']') p++;
+            if (*p == ',') p++;
+            while (*p == ' ') p++;
+        }
+    }
+
+    /* 目前的 Wi-Fi 連線 */
+    if (xw_link < 0 && (p = strstr(line, "mWifiInfo SSID: ")) != NULL) {
+        if ((q = strstr(p, "Wi-Fi standard: ")) != NULL) copy_until(q + 16, ',', xw_std, sizeof(xw_std));
+        if ((q = strstr(p, "RSSI: ")) != NULL) xw_rssi = atoi(q + 6);
+        if ((q = strstr(p, "Link speed: ")) != NULL) xw_link = atoi(q + 12);
+        if ((q = strstr(p, "Frequency: ")) != NULL) xw_freq = atoi(q + 11);
+        if (xw_link < 0) xw_link = 0;
+    }
+
+    /* 記憶體目前的狀態 */
+    if (strcmp(section, "MEMORY INFO") == 0) {
+        if (xm_avail < 0 && starts_with(line, "MemAvailable:")) xm_avail = atol(line + 13);
+        if (xm_swap_total < 0 && starts_with(line, "SwapTotal:")) xm_swap_total = atol(line + 10);
+        if (xm_swap_free < 0 && starts_with(line, "SwapFree:")) xm_swap_free = atol(line + 9);
+    }
+
+    /* 藍牙 */
+    if (strcmp(service, "bluetooth_manager") == 0) {
+        if (xbt_state[0] == '\0' && (starts_with(line, "  State:") || starts_with(line, "  state:"))) {
+            p = line + 8;
+            while (*p == ' ') p++;
+            copy_until(p, '\n', xbt_state, sizeof(xbt_state));
+            trim(xbt_state);
+        }
+        if (xbt_name[0] == '\0' && (starts_with(line, "  Name:") || starts_with(line, "  name:"))) {
+            p = line + 7;
+            while (*p == ' ') p++;
+            copy_until(p, '\n', xbt_name, sizeof(xbt_name));
+            trim(xbt_name);
+        }
+        if (xbt_bonded < 0 && (p = strstr(line, "Bonded devices:")) != NULL) {
+            p += 15;
+            while (*p == ' ') p++;
+            xbt_bonded = isdigit((unsigned char)*p) ? atoi(p) : 0;
+            xbt_in_bonded = 1;
+            return;
+        }
+        if (xbt_in_bonded) {
+            /*     XX:XX:XX:XX:A9:AA [ DUAL ][ 0x001f00 ] Xiaomi Smart Band 9 A9AA (SPP,...) */
+            if (starts_with(line, "    ") && (p = strstr(line, "][ 0x")) != NULL && (q = strchr(p + 2, ']')) != NULL) {
+                if (xbt_ndev < 20) {
+                    p = q + 1;
+                    while (*p == ' ') p++;
+                    copy_until(p, '\n', xbt_dev[xbt_ndev], 64);
+                    q = strstr(xbt_dev[xbt_ndev], " (");
+                    if (q != NULL) *q = '\0';
+                    trim(xbt_dev[xbt_ndev]);
+                    xbt_ndev++;
+                }
+            } else if (line[0] == '\n' || line[0] == '\r' || (starts_with(line, "  ") && isalpha((unsigned char)line[2]))) {
+                xbt_in_bonded = 0;
+            }
+        }
+    }
+
+    /* 喇叭擴大機：看真的在動作的晶片（核心紀錄），不是驅動清單 */
+    if ((p = strstr(line, "cs35l")) != NULL && isdigit((unsigned char)p[5]) && isdigit((unsigned char)p[6]) && p[7] == ' '
+        && isdigit((unsigned char)p[8]) && (q = strstr(p + 8, "-00")) != NULL && q - p < 12) {
+        char addr[16];
+        if (xa_chip[0] == '\0') sprintf(xa_chip, "CS35L%c%c", p[5], p[6]);
+        copy_until(p + 8, ':', addr, sizeof(addr));
+        for (i = 0; i < xa_naddr; i++) if (strcmp(xa_addr[i], addr) == 0) break;
+        if (i == xa_naddr && xa_naddr < 8) strcpy(xa_addr[xa_naddr++], addr);
+    }
+    if ((p = strstr(line, "[smartpa-codec_")) != NULL && isdigit((unsigned char)p[15])) {
+        a = atoi(p + 15) + 1;
+        if (a > xa_aw) xa_aw = a;
+        if (xa_chip[0] == '\0' && strstr(line, "aw882xx") != NULL) strcpy(xa_chip, "AW882xx");
+    }
+    if (xa_chip[0] == '\0' && (strstr(line, "[sipa_91xx]") != NULL || strstr(line, "sia91xx_") != NULL)) strcpy(xa_chip, "SIA91xx");
+    if (strstr(line, "speaker type is stereo") != NULL) xa_stereo = 1;
+
+    /* 震動馬達 */
+    if (xa_haptic[0] == '\0') {
+        if (strstr(line, "cs40l26") != NULL) strcpy(xa_haptic, "Cirrus Logic CS40L26");
+        else if ((p = strstr(line, "aw869")) != NULL && isdigit((unsigned char)p[5]) && isdigit((unsigned char)p[6])) {
+            copy_until(p, ' ', tmp, 16);
+            for (i = 0; tmp[i]; i++) tmp[i] = toupper((unsigned char)tmp[i]);
+            sprintf(xa_haptic, "艾為 Awinic %s", tmp);
+        }
+    }
+
+    if (xa_haptic[0] == '\0' && strcmp(section, "LSMOD") == 0 && starts_with(line, "aw8697 ")) strcpy(xa_haptic, "艾為 Awinic AW8697 (驅動清單)");
+
+    /* 三星的鏡頭：CAM_ACQUIRE_DEV Success for s5kgh1 sensor_id:... */
+    if ((p = strstr(line, "CAM_ACQUIRE_DEV Success for ")) != NULL) {
+        copy_until(p + 28, ' ', tmp, 16);
+        add_cam(tmp);
+    }
+
+    /* 指紋晶片：三星 type:QBT2608、vivo soc:qcom_qfs2630 */
+    if (x_fp[0] == '\0') {
+        if ((p = strstr(line, "type:QBT")) != NULL) copy_until(p + 5, ',', x_fp, sizeof(x_fp));
+        else if ((p = strstr(line, "qcom_qfs")) != NULL && isdigit((unsigned char)p[8])) {
+            copy_until(p + 5, ',', x_fp, sizeof(x_fp));
+            for (i = 0; x_fp[i]; i++) x_fp[i] = toupper((unsigned char)x_fp[i]);
+        }
+    }
+}
+
+/* ---------------- 讀完之後整理 ---------------- */
+
+void ex_finish(void)
+{
+    if (g_fp_text[0] == '\0' && x_fp[0]) sprintf(g_fp_text, "高通 Qualcomm 超聲波 (%s)", x_fp);
+    if (xa_naddr >= 2 || xa_aw >= 2) xa_stereo = 1;
+}
+
+/* ##################################################################
  * 7. 主程式
  * ################################################################## */
 
@@ -1730,6 +2282,7 @@ long read_file(const char *path)
         samsung_line(section, service);      /* 廠商 */
         oppo_line(section, service);         /* 廠商 */
         vivo_line(section, service);         /* 廠商 */
+        ex_line(section, service);           /* 更多資料（每家都有） */
 
         /* ---- 系統參數 ---- */
         if (line[0] == '[' && strcmp(section, "SYSTEM PROPERTIES") == 0) {
@@ -2191,6 +2744,11 @@ void judge(void)
         if (recent > 0) { cat_warn[9] = 1; sprintf(cat_note[9], "最近 90 天有 %d 次當機紀錄", recent); }
         if (g_real_bootfail > 0) { cat_warn[9] = 1; sprintf(cat_note[9], "有 %d 次開機失敗", g_real_bootfail); }
     }
+
+    /* 溫度：電池或機身超過 45 度、處理器超過 90 度、系統發熱等級 2 以上 */
+    if (xt[2] > 45 || xt[3] > 45) { cat_warn[10] = 1; sprintf(cat_note[10], "電池 / 機身溫度偏高 (%.0f°C)", xt[2] > xt[3] ? xt[2] : xt[3]); }
+    if (xt[0] > 90) { cat_warn[10] = 1; sprintf(cat_note[10], "處理器溫度 %.0f°C", xt[0]); }
+    if (xt_status >= 2) { cat_warn[10] = 1; sprintf(cat_note[10], "系統發熱等級 %d，效能會被降低", xt_status); }
 }
 
 /* ================= 第 4 部分：各分頁 ================= */
@@ -2247,6 +2805,7 @@ void page_system(void)
     printf(" 開發者選項   %s\n", g_dev == 1 ? "開啟" : "關閉");
     printf(" USB 偵錯     %s\n", g_adb == 1 ? "開啟" : "關閉");
     printf(" 無線偵錯     %s%s\n", g_adb_wifi == 1 ? "開啟" : "關閉", g_adb_wifi == 1 ? "  [注意] 不用時建議關掉" : "");
+    ex_system_more();
 }
 
 void page_cpu(void)
@@ -2261,6 +2820,7 @@ void page_cpu(void)
     printf(" 更新率       最高 %.0f Hz", g_max_hz);
     if (g_hz_setting[0]) printf("，目前設定 %s", g_hz_setting);
     printf("\n");
+    ex_cpu_more();
 }
 
 void page_parts(void)
@@ -2311,13 +2871,7 @@ void page_parts(void)
         printf(" %s %s %s\n", i == 0 ? "充電      " : "          ", maker, g_chargers[i]);
     }
 
-    if (g_amp[0]) {
-        const char *maker = "";
-        if (starts_with(g_amp, "cs")) maker = "Cirrus Logic";
-        else if (starts_with(g_amp, "aw")) maker = "艾為 Awinic";
-        else if (starts_with(g_amp, "tfa")) maker = "NXP";
-        printf(" 喇叭放大器 %s %s\n", maker, g_amp);
-    }
+    ex_amp_line();
     if (g_wifi_chip[0]) printf(" Wi-Fi/藍牙 聯發科 %s%s\n", g_wifi_chip, g_wifi7 ? " (Wi-Fi 7)" : "");
 }
 
@@ -2327,6 +2881,7 @@ void page_memory(void)
     printf("\n=========== 記憶體 ===========\n");
     if (g_dram_gb > 0) printf(" 總量   %d GB\n", g_dram_gb);
     else               printf(" 總量   %d GB (系統可用 %.1f GB)\n", round_size(g_memtotal_kb / 1024.0 / 1024.0, ram_sizes, 9), g_memtotal_kb / 1024.0 / 1024.0);
+    ex_memory_more();
     printf("\n ---- 特殊原因被關的 App ----\n");
     if (g_nkill == 0) printf(" 沒有\n");
     for (i = g_nkill - 1; i >= 0; i--) {
@@ -2347,6 +2902,7 @@ void page_storage(void)
     else                    printf(" 壽命       未記錄\n");
     if (g_preeol >= 0)      printf(" 老化預警   %s\n", g_preeol <= 1 ? "正常" : (g_preeol == 2 ? "警告  [注意]" : "緊急  [注意]"));
     printf(" 讀寫錯誤   %ld 次  %s\n", g_ufs_err, g_ufs_err > 0 ? "[注意]" : "[正常]");
+    ex_storage_more();
 }
 
 void page_battery(void)
@@ -2358,6 +2914,7 @@ void page_battery(void)
     if (g_cycle >= 0) printf(" 充放電次數    %d 次   %s\n", g_cycle, g_cycle > 800 ? "[注意]" : "[正常]");
     if (g_cycle_note[0]) printf("               %s\n", g_cycle_note);
     if (strlen(g_first_use) == 8) printf(" 開始使用      %.4s-%.2s-%.2s\n", g_first_use, g_first_use + 4, g_first_use + 6);
+    ex_battery_now();
     if (g_cv <= 0 && g_sd_min <= 0) return;     /* 沒有電壓資料，就不顯示 */
     printf("\n ---- 這顆電池的電壓範圍 ----\n");
     if (g_cv > 0) printf(" 充電上限   %.2f V   (充到這個電壓就停)\n", g_cv > 100000 ? g_cv / 1000000.0 : g_cv / 1000.0);
@@ -2394,6 +2951,7 @@ void page_network(void)
     if (strcmp(g_sim[0], "ABSENT") == 0 && strcmp(g_sim[1], "ABSENT") == 0) printf(" SIM     未插卡\n");
     else if (g_sim[0][0] || g_sim[1][0]) printf(" SIM     卡槽 1: %s  卡槽 2: %s\n", or_none(g_sim[0]), or_none(g_sim[1]));
     else printf(" SIM     未記錄\n");
+    ex_network_more();
 }
 
 void page_freeze(void)
@@ -2476,6 +3034,261 @@ void page_errors(void)
     printf(" 黑名單排除  %ld 行 (%d 種系統雜訊)\n", g_black, blacklist_n);
     printf(" 剩下要看的  %ld 行\n\n", g_kept);
     printf(" 詳細內容已存到 important.txt\n");
+}
+
+/* ================= 第 5 部分：更多資料的分頁 ================= */
+
+/* 系統頁加上的項目 */
+void ex_system_more(void)
+{
+    const char *av[] = {"10", "11", "12", "12L", "13", "14", "15", "16", "17", "18"};
+    printf("\n ---- 系統細節 ----\n");
+    if (x_first_api >= 29 && x_first_api <= 38) printf(" 出廠時的系統 Android %s\n", av[x_first_api - 29]);
+    if (x_build_date[0]) printf(" 系統編譯日期 %s\n", x_build_date);
+    if (x_kernel[0])     printf(" 核心版本     Linux %s\n", x_kernel);
+    if (x_baseband[0])   printf(" 基頻版本     %s\n", x_baseband);
+    if (x_gms[0])        printf(" Google 服務  %s\n", x_gms);
+    if (x_region[0]) {
+        const char *r = x_region;
+        if (strcmp(x_region, "CN") == 0) r = "中國版 (CN)";
+        else if (strcmp(x_region, "GLOBAL") == 0 || strcmp(x_region, "GL") == 0) r = "國際版 (GLOBAL)";
+        else if (strcmp(x_region, "TW") == 0) r = "台灣版 (TW)";
+        printf(" 銷售地區     %s\n", r);
+    }
+    if (x_locale[0]) printf(" 語言         %s\n", x_locale);
+    if (x_tz[0])     printf(" 時區         %s\n", x_tz);
+    if (x_crypto[0]) printf(" 資料加密     %s\n", strcmp(x_crypto, "encrypted") == 0 ? "已加密" : x_crypto);
+    if (x_slot[0])   printf(" 系統分割區   A/B 雙分割區，目前使用 %c 槽\n", toupper((unsigned char)x_slot[strlen(x_slot) - 1]));
+}
+
+/* 處理器與螢幕頁加上的項目 */
+void ex_cpu_more(void)
+{
+    int i, j;
+    double t;
+    if (xdp_nrates > 0) {
+        for (i = 0; i < xdp_nrates - 1; i++)
+            for (j = 0; j < xdp_nrates - 1 - i; j++)
+                if (xdp_rates[j] < xdp_rates[j+1]) { t = xdp_rates[j]; xdp_rates[j] = xdp_rates[j+1]; xdp_rates[j+1] = t; }
+        printf(" 可用更新率  ");
+        for (i = 0; i < xdp_nrates; i++) printf(" %.0f", xdp_rates[i] + 0.0001);
+        printf(" Hz\n");
+    }
+    if (xdp_density > 0) printf(" 像素密度     %.0f ppi (系統顯示密度 %d dpi)\n", xdp_dpi, xdp_density);
+    if (xdp_hdr[0])      printf(" HDR 格式     %s\n", xdp_hdr);
+}
+
+/* 記憶體頁加上的項目 */
+void ex_memory_more(void)
+{
+    if (xm_avail >= 0) printf(" 目前可用 %.1f GB\n", xm_avail / 1024.0 / 1024.0);
+    if (xm_swap_total > 0 && xm_swap_free >= 0) {
+        long used = xm_swap_total - xm_swap_free;
+        printf(" 虛擬記憶體 已用 %.1f / %.1f GB (%ld%%)%s\n", used / 1024.0 / 1024.0, xm_swap_total / 1024.0 / 1024.0,
+               used * 100 / xm_swap_total, used * 100 / xm_swap_total >= 95 ? "  快滿了，背景 App 容易被關" : "");
+    }
+}
+
+/* 儲存空間頁加上的項目 */
+void ex_storage_more(void)
+{
+    char a[32];
+    int i, j, k, idx[10], n = 0;
+    if (xd_app < 0) return;
+    printf("\n ---- 空間用在哪裡 ----\n");
+    if (xd_free_kb >= 0 && g_data_total_kb > 0) {
+        bytes_text(xd_free_kb * 1024.0, a);
+        printf(" 剩餘空間     %s (%ld%%)\n", a, xd_free_kb * 100 / g_data_total_kb);
+    }
+    bytes_text(xd_app, a);   printf(" App 本體     %s\n", a);
+    if (xd_data >= 0)  { bytes_text(xd_data, a);  printf(" App 資料     %s\n", a); }
+    if (xd_cache >= 0) { bytes_text(xd_cache, a); printf(" App 快取     %s (可以清除)\n", a); }
+    if (xd_photo >= 0) { bytes_text(xd_photo, a); printf(" 照片         %s\n", a); }
+    if (xd_video >= 0) { bytes_text(xd_video, a); printf(" 影片         %s\n", a); }
+    if (xd_audio >= 0) { bytes_text(xd_audio, a); printf(" 音樂與錄音   %s\n", a); }
+    if (xd_other >= 0) { bytes_text(xd_other, a); printf(" 其他檔案     %s\n", a); }
+    if (xd_write >= 0) printf(" 最近寫入速度 %.0f MB/s\n", xd_write / 1024.0);
+
+    /* 佔最多空間的 App（本體 + 資料） */
+    if (dn_n == 0) return;
+    for (k = 0; k < 10; k++) {
+        int best = -1;
+        for (i = 0; i < dn_n; i++) {
+            for (j = 0; j < n; j++) if (idx[j] == i) break;
+            if (j < n) continue;
+            if (best < 0 || dn_size[i] > dn_size[best]) best = i;
+        }
+        if (best < 0 || dn_size[best] <= 0) break;
+        idx[n++] = best;
+    }
+    printf("\n ---- 最佔空間的 App ----\n");
+    for (i = 0; i < n; i++) {
+        char lab[160];
+        bytes_text(dn_size[idx[i]], a);
+        app_label(dn_name[idx[i]], lab);
+        printf(" %2d. %-10s %s\n", i + 1, a, lab);
+    }
+}
+
+/* 電池頁加上的「目前狀態」 */
+void ex_battery_now(void)
+{
+    if (xb_level < 0) return;
+    printf("\n ---- 抓取當下的狀態 ----\n");
+    printf(" 電量       %d%%\n", xb_level);
+    if (xb_status == 2) printf(" 狀態       充電中%s\n", xb_ac ? " (插座)" : xb_usb ? " (USB)" : xb_wl ? " (無線)" : "");
+    else if (xb_status == 5) printf(" 狀態       已充飽\n");
+    else printf(" 狀態       沒有充電\n");
+    if (xb_volt > 1000) printf(" 電壓       %.2f V\n", xb_volt / 1000.0);
+    if (xb_temp != -9999) printf(" 溫度       %.1f°C%s\n", xb_temp / 10.0, xb_temp > 450 ? "  [注意] 偏熱" : "");
+    if (xb_tech[0]) printf(" 電池種類   %s\n", strcmp(xb_tech, "Li-poly") == 0 ? "鋰聚合物 (Li-poly)" : strcmp(xb_tech, "Li-ion") == 0 ? "鋰離子 (Li-ion)" : xb_tech);
+    if (xb_health >= 0 && xb_health != 2) printf(" 電池狀況   系統回報異常 (代碼 %d)  [注意]\n", xb_health);
+    if (xb_counter > 0 && xb_level >= 20) {
+        printf(" 目前電量約 %ld mAh，換算充滿約 %ld mAh\n", xb_counter / 1000, xb_counter / 10 / xb_level);
+        printf("            (由電量計推算，有些手機不準，健康度以上面為準)\n");
+    }
+    if (xp_capacity > 0) printf(" 系統記錄的電池容量 %ld mAh\n", xp_capacity);
+}
+
+/* 網路頁加上的項目 */
+void ex_network_more(void)
+{
+    char op[96], nt[48], *p;
+    if (xw_link >= 0 && xw_freq > 0) {
+        const char *band = xw_freq >= 5925 ? "6 GHz" : xw_freq >= 4900 ? "5 GHz" : "2.4 GHz";
+        const char *gen = "";
+        if (strcmp(xw_std, "11be") == 0) gen = "Wi-Fi 7";
+        else if (strcmp(xw_std, "11ax") == 0) gen = "Wi-Fi 6";
+        else if (strcmp(xw_std, "11ac") == 0) gen = "Wi-Fi 5";
+        else if (strcmp(xw_std, "11n") == 0) gen = "Wi-Fi 4";
+        printf("\n ---- 抓取當下的 Wi-Fi ----\n");
+        printf(" 規格   %s %s，%s\n", gen, xw_std, band);
+        if (xw_rssi != 999) printf(" 訊號   %d dBm\n", xw_rssi);
+        printf(" 連線速率 %d Mbps\n", xw_link);
+    }
+    if (x_sim_op[0] && strcmp(x_sim_op, ",") != 0) {
+        strcpy(op, x_sim_op);
+        strcpy(nt, x_net_type);
+        printf("\n ---- 行動網路 ----\n");
+        p = strchr(op, ',');
+        if (p != NULL) *p = '\0';
+        if (op[0]) {
+            char t1[24] = "";
+            copy_until(nt, ',', t1, sizeof(t1));
+            printf(" 卡槽 1  %s  %s\n", op, strcmp(t1, "Unknown") == 0 ? "" : t1);
+        }
+        if (p != NULL && p[1]) {
+            char *n2 = strchr(nt, ',');
+            printf(" 卡槽 2  %s  %s\n", p + 1, (n2 != NULL && strcmp(n2 + 1, "Unknown") != 0) ? n2 + 1 : "");
+        }
+    }
+}
+
+/* 零件頁的喇叭放大器 */
+void ex_amp_line(void)
+{
+    if (xa_chip[0]) {
+        const char *maker = "";
+        int n = xa_naddr > xa_aw ? xa_naddr : xa_aw;
+        if (starts_with(xa_chip, "CS")) maker = "Cirrus Logic";
+        else if (starts_with(xa_chip, "AW")) maker = "艾為 Awinic";
+        if (n >= 2) printf(" 喇叭放大器 %s%s%s x %d\n", maker, maker[0] ? " " : "", xa_chip, n);
+        else        printf(" 喇叭放大器 %s%s%s\n", maker, maker[0] ? " " : "", xa_chip);
+    } else if (g_amp[0]) {
+        const char *maker = "";
+        if (starts_with(g_amp, "cs")) maker = "Cirrus Logic";
+        else if (starts_with(g_amp, "aw")) maker = "艾為 Awinic";
+        else if (starts_with(g_amp, "tfa")) maker = "NXP";
+        printf(" 喇叭放大器 %s %s\n", maker, g_amp);
+    }
+    if (xa_haptic[0]) printf(" 震動馬達   %s\n", xa_haptic);
+}
+
+/* 溫度頁 */
+void page_thermal(void)
+{
+    const char *tn[] = {"處理器    ", "圖形晶片  ", "電池      ", "機身表面  ", "USB 接口  ", "訊號放大器"};
+    const char *st[] = {"正常", "輕微發熱", "中度發熱，可能降速", "嚴重發熱，會降速", "非常燙，大幅降速", "緊急", "即將關機"};
+    int i, any = 0;
+    printf("\n============ 溫度 ============\n");
+    printf(" (抓取報告當下的溫度)\n");
+    for (i = 0; i < 6; i++) {
+        if (xt[i] <= 0) continue;
+        any = 1;
+        printf(" %s %.1f°C%s\n", tn[i], xt[i],
+               ((i == 2 && xt[i] > 45) || (i == 3 && xt[i] > 45) || (i <= 1 && xt[i] > 90)) ? "  [注意]" : "");
+    }
+    if (!any && xb_temp != -9999) { printf(" 電池       %.1f°C\n", xb_temp / 10.0); any = 1; }
+    if (!any) printf(" 沒有記錄\n");
+    if (xt_status >= 0 && xt_status <= 6) printf("\n 發熱等級   %d (%s)%s\n", xt_status, st[xt_status], xt_status >= 2 ? "  [注意]" : "");
+}
+
+/* 感測器頁 */
+void page_sensors(void)
+{
+    int i;
+    printf("\n=========== 感測器 ===========\n");
+    if (xs_total == 0) { printf(" 沒有記錄\n"); return; }
+    printf(" 系統一共回報 %d 個感測器 (含軟體算出來的)\n\n", xs_total);
+    for (i = 0; i < xs_n; i++) {
+        printf(" %s\n", sensor_cn(xs[i].type));
+        printf("   %s  (%s)\n", xs[i].name, xs[i].vendor);
+    }
+}
+
+/* 音訊與震動頁 */
+void page_audio(void)
+{
+    int n = xa_naddr > xa_aw ? xa_naddr : xa_aw;
+    printf("\n========= 音訊與震動 =========\n");
+    printf(" 喇叭       %s\n", xa_stereo ? "立體聲 (2 個喇叭)" : n == 1 ? "單聲道" : "未記錄");
+    ex_amp_line();
+    if (xa_chip[0] == '\0' && g_amp[0] == '\0' && xa_haptic[0] == '\0') printf(" 報告裡沒有記錄喇叭和震動的晶片\n");
+    printf("\n 報告裡沒有喇叭本身的尺寸、瓦數等規格，只有控制晶片\n");
+}
+
+/* 藍牙頁 */
+void page_bluetooth(void)
+{
+    int i, n;
+    printf("\n============ 藍牙 ============\n");
+    if (xbt_state[0] == '\0' && xbt_bonded < 0) { printf(" 沒有記錄\n"); return; }
+    if (xbt_state[0]) printf(" 狀態       %s\n", strcmp(xbt_state, "ON") == 0 ? "開啟" : strcmp(xbt_state, "OFF") == 0 ? "關閉" : strcmp(xbt_state, "BLE_ON") == 0 ? "只開省電藍牙 (BLE)" : xbt_state);
+    if (xbt_name[0])  printf(" 裝置名稱   %s\n", xbt_name);
+    n = xbt_bonded > xbt_ndev ? xbt_bonded : xbt_ndev;
+    if (n >= 0) printf(" 配對過的裝置 %d 個\n", n);
+    for (i = 0; i < xbt_ndev; i++) printf("   %s\n", xbt_dev[i]);
+    if (n > 0 && xbt_ndev == 0) printf("   (這個系統的報告沒有寫裝置名稱)\n");
+}
+
+/* 應用程式頁 */
+void page_apps(void)
+{
+    char a[48], lab[160];
+    int i, j, k, idx[10], n = 0;
+    printf("\n========== 應用程式 ==========\n");
+    if (dn_n > 0) printf(" 已安裝 %d 個套件 (含系統內建)\n", dn_n);
+    else if (pk_n > 0) printf(" 已安裝約 %d 個套件 (含系統內建)\n", pk_n);
+
+    if (xp_n == 0) { printf("\n 沒有耗電紀錄\n"); return; }
+    printf("\n ---- 耗電排行 ----\n");
+    if (xp_onbatt[0]) { dur_text(xp_onbatt, a); printf(" 統計期間：用電池 %s", a); }
+    if (xp_screen[0]) { dur_text(xp_screen, a); printf("，螢幕亮著 %s", a); }
+    if (xp_onbatt[0] || xp_screen[0]) printf("\n\n");
+    for (k = 0; k < 10; k++) {
+        int best = -1;
+        for (i = 0; i < xp_n; i++) {
+            for (j = 0; j < n; j++) if (idx[j] == i) break;
+            if (j < n) continue;
+            if (best < 0 || xp[i].mah > xp[best].mah) best = i;
+        }
+        if (best < 0 || xp[best].mah <= 0) break;
+        idx[n++] = best;
+    }
+    for (i = 0; i < n; i++) {
+        uid_label(xp[idx[i]].uid, lab);
+        printf(" %2d. %6.0f mAh  %s\n", i + 1, xp[idx[i]].mah, lab);
+    }
 }
 
 /* ================= 主程式 ================= */
@@ -2608,6 +3421,7 @@ int run_analysis(char *path)
     samsung_finish();        /* 廠商 */
     oppo_finish();           /* 廠商 */
     vivo_finish();           /* 廠商 */
+    ex_finish();             /* 更多資料 */
     android_finish();        /* 一定要放在所有廠商後面 */
 
     load_history();
@@ -2642,6 +3456,11 @@ int main()
         printf("10. 穩定性        %s\n", status(7));
         printf("11. 錯誤訊息      %s\n", status(8));
         printf("12. 歷史紀錄      %s\n", g_has_hist ? status(9) : "(要選 zip 才有)");
+        printf("13. 溫度          %s\n", status(10));
+        printf("14. 感測器\n");
+        printf("15. 音訊與震動\n");
+        printf("16. 藍牙\n");
+        printf("17. 應用程式\n");
         printf(" 0. 離開\n");
         printf("請選擇:");
         if (scanf("%d", &choice) != 1) break;
@@ -2659,6 +3478,11 @@ int main()
         else if (choice == 10) page_stability();
         else if (choice == 11) page_errors();
         else if (choice == 12) page_history();
+        else if (choice == 13) page_thermal();
+        else if (choice == 14) page_sensors();
+        else if (choice == 15) page_audio();
+        else if (choice == 16) page_bluetooth();
+        else if (choice == 17) page_apps();
         else { printf("沒有這個選項\n"); continue; }
         wait_enter();
     }
@@ -2689,7 +3513,7 @@ JNIEXPORT jdouble JNICALL
 Java_com_example_ov_ReportActivity_totalBytes(JNIEnv *env, jobject thiz) { return g_prog_total; }
 
 /* App 傳進來：檔案路徑（.zip 會先由 App 解壓縮到同名資料夾）、結果要放的資料夾
-   結果：menu.txt（每行「頁名<TAB>狀態」）、p1.txt ～ p12.txt（每一頁的內容） */
+   結果：menu.txt（每行「頁名<TAB>狀態」）、p1.txt ～ p17.txt（每一頁的內容） */
 JNIEXPORT jint JNICALL
 Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jpath, jstring jout)
 {
@@ -2716,7 +3540,12 @@ Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jp
     printf("%s\t%s\n", "記憶體", status(2));
     printf("%s\t%s\n", "儲存空間", status(3));
     printf("%s\t%s\n", "電池", status(4));
+    printf("%s\t%s\n", "溫度", status(10));
     printf("%s\t%s\n", "網路", status(5));
+    printf("%s\t%s\n", "藍牙", "");
+    printf("%s\t%s\n", "感測器", "");
+    printf("%s\t%s\n", "音訊與震動", "");
+    printf("%s\t%s\n", "應用程式", "");
     printf("%s\t%s\n", "背景凍結", status(6));
     printf("%s\t%s\n", "穩定性", status(7));
     printf("%s\t%s\n", "錯誤訊息", status(8));
@@ -2725,6 +3554,7 @@ Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jp
     print_to("head.txt");
     printf("%s\nAndroid %s\n抓取時間 %s\n", or_none(g_model), or_none(g_android), or_none(g_capture));
 
+    /* 每一頁的檔名照上面 menu.txt 的順序：p1.txt、p2.txt ... */
     print_to("p1.txt");  page_overview();
     print_to("p2.txt");  page_system();
     print_to("p3.txt");  page_cpu();
@@ -2732,11 +3562,16 @@ Java_com_example_ov_ReportActivity_analyze(JNIEnv *env, jobject thiz, jstring jp
     print_to("p5.txt");  page_memory();
     print_to("p6.txt");  page_storage();
     print_to("p7.txt");  page_battery();
-    print_to("p8.txt");  page_network();
-    print_to("p9.txt");  page_freeze();
-    print_to("p10.txt"); page_stability();
-    print_to("p11.txt"); page_errors();
-    print_to("p12.txt"); page_history();
+    print_to("p8.txt");  page_thermal();
+    print_to("p9.txt");  page_network();
+    print_to("p10.txt"); page_bluetooth();
+    print_to("p11.txt"); page_sensors();
+    print_to("p12.txt"); page_audio();
+    print_to("p13.txt"); page_apps();
+    print_to("p14.txt"); page_freeze();
+    print_to("p15.txt"); page_stability();
+    print_to("p16.txt"); page_errors();
+    print_to("p17.txt"); page_history();
     fflush(stdout);
     return 1;
 }

@@ -2,14 +2,14 @@ package com.example.ov
 
 import android.graphics.Typeface
 import android.os.Bundle
-import android.widget.ProgressBar
 import android.os.Process
 import android.view.View
 import android.widget.Button
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
-import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 
@@ -41,54 +41,42 @@ fun progressText(title: String, done: Double, total: Double, startMs: Long): Str
     return sb.toString()
 }
 
-/* 結果畫面：呼叫 C 程式分析，再顯示選單和每一頁 */
+/* 結果畫面：呼叫 C 程式分析，把所有分類一次列在同一頁 */
 class ReportActivity : AppCompatActivity() {
 
-    private lateinit var menu: LinearLayout   // 選單（12 個按鈕）
-    private lateinit var page: TextView       // 某一頁的內容
+    private lateinit var box: LinearLayout     // 整頁的內容
     private lateinit var scroll: ScrollView
-    private lateinit var out: File            // C 程式把結果寫在這個資料夾
-    private var inPage = false
+    private lateinit var out: File             // C 程式把結果寫在這個資料夾
+    private val heads = ArrayList<TextView>()  // 每個分類的標題（點一下收合 / 展開）
+    private val bodies = ArrayList<TextView>() // 每個分類的內容
+    private val names = ArrayList<String>()
+    private val states = ArrayList<String>()
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val pad = (16 * resources.displayMetrics.density).toInt()
+        val pad = dp(16)
 
-        menu = LinearLayout(this)
-        menu.orientation = LinearLayout.VERTICAL
-        page = TextView(this)
-        page.typeface = Typeface.MONOSPACE
-        page.textSize = 13f
-        page.setTextIsSelectable(true)
-        page.visibility = View.GONE
-        val box = LinearLayout(this)
+        box = LinearLayout(this)
         box.orientation = LinearLayout.VERTICAL
         box.setPadding(pad, pad, pad, pad)
-        box.addView(menu)
-        box.addView(page)
         scroll = ScrollView(this)
         scroll.fitsSystemWindows = true
         scroll.addView(box)
         setContentView(scroll)
         title = "檢測結果"
 
-        // 返回鍵：在某一頁就回選單，在選單就離開
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (inPage) showMenu() else finish()
-            }
-        })
-
         out = File(cacheDir, "out")
-        if (done) { buildMenu(); return }      // 已經分析過了（例如畫面重建），直接顯示
+        if (done) { buildAll(); return }      // 已經分析過了（例如畫面重建），直接顯示
 
         val msg = TextView(this)
         msg.textSize = 16f
         msg.text = "正在準備..."
         val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
         bar.max = 1000
-        menu.addView(bar)
-        menu.addView(msg)
+        box.addView(bar)
+        box.addView(msg)
 
         // 每 0.2 秒問 C 程式讀到哪裡了
         val start = System.currentTimeMillis()
@@ -117,7 +105,7 @@ class ReportActivity : AppCompatActivity() {
             runOnUiThread {
                 scroll.removeCallbacks(ticker)
                 if (!isDestroyed) {
-                    if (ok) buildMenu() else msg.text = "分析失敗\n\n" + read("log.txt")
+                    if (ok) buildAll() else msg.text = "分析失敗\n\n" + read("log.txt")
                 }
             }
         }, "analyze", 64L * 1024 * 1024).start()
@@ -128,39 +116,99 @@ class ReportActivity : AppCompatActivity() {
         return if (f.exists()) f.readText().trim() else ""
     }
 
-    // 選單：最上面是型號，下面 12 個按鈕
-    private fun buildMenu() {
-        menu.removeAllViews()
+    // 某一頁的內容，去掉第一行的「==== 標題 ====」（標題已經另外顯示了）
+    private fun pageText(n: Int): String {
+        val lines = read("p$n.txt").lines()
+        val rest = if (lines.isNotEmpty() && lines[0].contains("====")) lines.drop(1) else lines
+        return rest.joinToString("\n").trim('\n')
+    }
+
+    // 整頁：型號 → 分類目錄 → 每個分類的標題和內容
+    private fun buildAll() {
+        box.removeAllViews()
+        heads.clear(); bodies.clear(); names.clear(); states.clear()
+
         val head = TextView(this)
         head.textSize = 16f
-        head.text = read("head.txt") + "\n"
-        menu.addView(head)
-        read("menu.txt").lines().forEachIndexed { i, line ->
+        head.text = read("head.txt")
+        box.addView(head)
+
+        // 目錄：點一下就跳到那個分類
+        val chips = LinearLayout(this)
+        chips.orientation = LinearLayout.HORIZONTAL
+        val chipScroll = HorizontalScrollView(this)
+        chipScroll.addView(chips)
+        box.addView(chipScroll)
+
+        // 全部收合 / 全部展開
+        val toggle = Button(this)
+        toggle.text = "全部收合"
+        box.addView(toggle)
+
+        read("menu.txt").lines().filter { it.isNotBlank() }.forEachIndexed { i, line ->
             val parts = line.split("\t")
             val name = parts[0]
             val state = parts.getOrElse(1) { "" }
-            val b = Button(this)
-            b.text = if (state.isEmpty()) name else "$name    $state"
-            b.setOnClickListener { showPage(i + 1, name) }
-            menu.addView(b)
+            val warn = state.contains("注意")
+            names.add(name)
+            states.add(state)
+
+            val h = TextView(this)
+            h.textSize = 17f
+            h.setTypeface(null, Typeface.BOLD)
+            h.setPadding(dp(12), dp(10), dp(12), dp(10))
+            h.setBackgroundColor(if (warn) 0xFFFDECEA.toInt() else 0xFFE8EAED.toInt())
+            h.setTextColor(if (warn) 0xFFB3261E.toInt() else 0xFF202124.toInt())
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            lp.topMargin = dp(16)
+            h.layoutParams = lp
+
+            val body = TextView(this)
+            body.typeface = Typeface.MONOSPACE
+            body.textSize = 13f
+            body.setTextIsSelectable(true)
+            body.setPadding(dp(4), dp(8), dp(4), 0)
+            body.text = pageText(i + 1)
+
+            heads.add(h)
+            bodies.add(body)
+            setHead(i)
+            h.setOnClickListener {
+                body.visibility = if (body.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                setHead(i)
+            }
+            box.addView(h)
+            box.addView(body)
+
+            val c = Button(this)
+            c.text = if (warn) "$name !" else name
+            c.isAllCaps = false
+            c.textSize = 13f
+            c.minWidth = 0
+            c.minimumWidth = 0
+            c.setOnClickListener {
+                body.visibility = View.VISIBLE
+                setHead(i)
+                scroll.post { scroll.smoothScrollTo(0, h.top) }
+            }
+            chips.addView(c)
+        }
+
+        toggle.setOnClickListener {
+            val anyOpen = bodies.any { it.visibility == View.VISIBLE }
+            for (i in bodies.indices) {
+                bodies[i].visibility = if (anyOpen) View.GONE else View.VISIBLE
+                setHead(i)
+            }
+            toggle.text = if (anyOpen) "全部展開" else "全部收合"
         }
     }
 
-    private fun showPage(n: Int, name: String) {
-        page.text = read("p$n.txt")
-        menu.visibility = View.GONE
-        page.visibility = View.VISIBLE
-        title = name
-        inPage = true
-        scroll.scrollTo(0, 0)
-    }
-
-    private fun showMenu() {
-        page.visibility = View.GONE
-        menu.visibility = View.VISIBLE
-        title = "檢測結果"
-        inPage = false
-        scroll.scrollTo(0, 0)
+    // 標題：▼ 打開、▶ 收起來，後面接 [正常] / [注意]
+    private fun setHead(i: Int) {
+        val open = bodies[i].visibility == View.VISIBLE
+        val st = if (states[i].isEmpty()) "" else "   " + states[i]
+        heads[i].text = (if (open) "▼ " else "▶ ") + names[i] + st
     }
 
     // 離開結果畫面就結束這個分析用的程序，下次分析會從乾淨的狀態開始
