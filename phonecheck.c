@@ -170,15 +170,94 @@ const char *camera_maker(const char *name)
     return "";
 }
 
-/* 高通處理器代號 → 名稱 */
+/* ================= 內建零件資料庫（不用上網） ================= */
+
+/* 處理器代號 → 名稱（高通、聯發科、三星） */
+const char *soc_db[][2] = {
+    {"SM8850", "Snapdragon 8 Elite Gen 5"}, {"SM8750", "Snapdragon 8 Elite"},
+    {"SM8735", "Snapdragon 8s Gen 4"}, {"SM8650", "Snapdragon 8 Gen 3"}, {"SM8635", "Snapdragon 8s Gen 3"},
+    {"SM8550", "Snapdragon 8 Gen 2"}, {"SM8475", "Snapdragon 8+ Gen 1"}, {"SM8450", "Snapdragon 8 Gen 1"},
+    {"SM8350", "Snapdragon 888"}, {"SM8250", "Snapdragon 865"}, {"SM8150", "Snapdragon 855"},
+    {"SM7675", "Snapdragon 7+ Gen 3"}, {"SM7550", "Snapdragon 7 Gen 3"}, {"SM7475", "Snapdragon 7+ Gen 2"},
+    {"MT6993", "天璣 Dimensity 9500"}, {"MT6991", "天璣 Dimensity 9400 / 9400+"},
+    {"MT6989", "天璣 Dimensity 9300 / 9300+"}, {"MT6985", "天璣 Dimensity 9200 / 9200+"},
+    {"MT6983", "天璣 Dimensity 9000 / 9000+"}, {"MT6899", "天璣 Dimensity 8400"},
+    {"MT6897", "天璣 Dimensity 8300"}, {"MT6896", "天璣 Dimensity 8200"}, {"MT6895", "天璣 Dimensity 8100"},
+    {"MT6878", "天璣 Dimensity 7300"},
+    {"s5e9955", "Exynos 2500"}, {"s5e9945", "Exynos 2400"}, {"s5e9925", "Exynos 2200"}
+};
+
 const char *soc_name(const char *soc)
 {
-    if (strcmp(soc, "SM8450") == 0) return "Snapdragon 8 Gen 1";
-    if (strcmp(soc, "SM8475") == 0) return "Snapdragon 8+ Gen 1";
-    if (strcmp(soc, "SM8550") == 0) return "Snapdragon 8 Gen 2";
-    if (strcmp(soc, "SM8650") == 0) return "Snapdragon 8 Gen 3";
-    if (strcmp(soc, "SM8750") == 0) return "Snapdragon 8 Elite";
+    int i, n = sizeof(soc_db) / sizeof(soc_db[0]);
+    for (i = 0; i < n; i++) if (strcmp(soc, soc_db[i][0]) == 0) return soc_db[i][1];
     return "";
+}
+
+/* 鏡頭感光元件型號 → 畫素和尺寸（尺寸越大，暗的地方拍得越好） */
+const char *cam_db[][2] = {
+    /* Sony */
+    {"LYT900", "5000 萬畫素 · 1 吋"}, {"LYT818", "5000 萬畫素 · 1/1.28 吋"}, {"LYT808", "5000 萬畫素 · 1/1.4 吋"},
+    {"LYT800", "5000 萬畫素 · 1/1.56 吋"}, {"LYT700", "5000 萬畫素 · 1/1.56 吋"}, {"LYT600", "5000 萬畫素 · 1/1.95 吋"},
+    {"IMX989", "5000 萬畫素 · 1 吋"}, {"IMX707", "5000 萬畫素 · 1/1.28 吋"}, {"IMX766", "5000 萬畫素 · 1/1.56 吋"},
+    {"IMX890", "5000 萬畫素 · 1/1.56 吋"}, {"IMX906", "5000 萬畫素 · 1/1.56 吋"}, {"IMX882", "5000 萬畫素 · 1/1.95 吋"},
+    {"IMX858", "5000 萬畫素 · 1/2.51 吋"}, {"IMX686", "6400 萬畫素 · 1/1.7 吋"}, {"IMX682", "6400 萬畫素 · 1/1.73 吋"},
+    {"IMX586", "4800 萬畫素 · 1/2 吋"}, {"IMX582", "4800 萬畫素 · 1/2 吋"}, {"IMX600", "4000 萬畫素 · 1/1.7 吋"},
+    {"IMX615", "3200 萬畫素 · 1/2.8 吋"}, {"IMX616", "3200 萬畫素 · 1/2.8 吋"}, {"IMX563", "1200 萬畫素 · 1/2.55 吋"},
+    {"IMX363", "1200 萬畫素 · 1/2.55 吋"}, {"IMX378", "1200 萬畫素 · 1/2.3 吋"}, {"IMX471", "1600 萬畫素 · 1/3.09 吋"},
+    {"IMX371", "1600 萬畫素 · 1/3.1 吋"}, {"IMX258", "1300 萬畫素 · 1/3.06 吋"}, {"IMX355", "800 萬畫素 · 1/4 吋"},
+    /* 三星 ISOCELL */
+    {"S5KHP1", "2 億畫素 · 1/1.22 吋"}, {"S5KHP2", "2 億畫素 · 1/1.3 吋"}, {"S5KHP3", "2 億畫素 · 1/1.4 吋"},
+    {"S5KHP9", "2 億畫素 · 1/1.4 吋"}, {"S5KHM3", "1 億 800 萬畫素 · 1/1.33 吋"}, {"S5KHM2", "1 億 800 萬畫素 · 1/1.52 吋"},
+    {"S5KHM6", "1 億 800 萬畫素 · 1/1.67 吋"}, {"S5KGN1", "5000 萬畫素 · 1/1.31 吋"}, {"S5KGN2", "5000 萬畫素 · 1/1.12 吋"},
+    {"S5KGN3", "5000 萬畫素 · 1/1.57 吋"}, {"S5KGN5", "5000 萬畫素 · 1/1.57 吋"}, {"S5KJN1", "5000 萬畫素 · 1/2.76 吋"},
+    {"S5KJN5", "5000 萬畫素 · 1/2.76 吋"}, {"S5KGW1", "6400 萬畫素 · 1/1.72 吋"}, {"S5KGW3", "6400 萬畫素 · 1/1.97 吋"},
+    {"S5KGM2", "4800 萬畫素 · 1/2 吋"}, {"S5KGH1", "4000 萬畫素 · 1/2.82 吋"}, {"S5KGD1", "3200 萬畫素 · 1/2.8 吋"},
+    {"S5K3J1", "1000 萬畫素 · 1/3.24 吋"}, {"S5K3P9", "1600 萬畫素 · 1/3.1 吋"},
+    /* OmniVision */
+    {"OV50H", "5000 萬畫素 · 1/1.3 吋"}, {"OV50E", "5000 萬畫素 · 1/1.55 吋"}, {"OV50A", "5000 萬畫素 · 1/1.5 吋"},
+    {"OV64B", "6400 萬畫素 · 1/2 吋"}, {"OV13B", "1300 萬畫素 · 1/3.06 吋"}, {"OV08A", "800 萬畫素 · 1/4 吋"},
+    /* 其他 */
+    {"HI846", "800 萬畫素 · 1/4 吋"}, {"HI556", "500 萬畫素 · 1/5 吋"}
+};
+
+const char *camera_spec(const char *name)
+{
+    char k[32];
+    int i, j = 0, n = sizeof(cam_db) / sizeof(cam_db[0]);
+    /* 統一寫法：大寫、去掉減號，JN1 這種補上 S5K */
+    if (starts_with(name, "JN") || starts_with(name, "HP") || starts_with(name, "HM") || starts_with(name, "GN") ||
+        starts_with(name, "GH") || starts_with(name, "GW") || starts_with(name, "GM") || starts_with(name, "3J")) {
+        strcpy(k, "S5K");
+        j = 3;
+    }
+    for (i = 0; name[i] && j < 31; i++) if (name[i] != '-') k[j++] = (char)toupper((unsigned char)name[i]);
+    k[j] = '\0';
+    for (i = 0; i < n; i++) if (starts_with(k, cam_db[i][0])) return cam_db[i][1];
+    return NULL;
+}
+
+/* 喇叭放大器、震動晶片 → 白話說明 */
+const char *amp_db[][2] = {
+    {"CS35L4", "Cirrus Logic 智慧放大器：內建升壓，會即時監測喇叭溫度和振幅來保護喇叭，旗艦機常用"},
+    {"AW882", "艾為智慧放大器：內建升壓和喇叭保護，中高階機常用"},
+    {"AW883", "艾為智慧放大器：內建升壓和喇叭保護，中高階機常用"},
+    {"TFA98", "NXP（現屬匯頂）智慧放大器：內建喇叭保護"},
+    {"MAX983", "Maxim 智慧放大器：內建升壓和喇叭保護"},
+    {"TAS25", "德州儀器智慧放大器：內建升壓和喇叭保護"},
+    {"SIA", "SIA 系列智慧放大器"},
+    {"CS40L", "Cirrus Logic 觸覺驅動晶片：能做出細膩、清脆的震動，旗艦機常用"},
+    {"AW869", "艾為觸覺驅動晶片：控制線性馬達，震動比較清脆"}
+};
+
+const char *amp_desc(const char *chip)
+{
+    char k[32];
+    int i, n = sizeof(amp_db) / sizeof(amp_db[0]);
+    for (i = 0; chip[i] && i < 31; i++) k[i] = (char)toupper((unsigned char)chip[i]);
+    k[i] = '\0';
+    for (i = 0; i < n; i++) if (strstr(k, amp_db[i][0]) != NULL) return amp_db[i][1];
+    return NULL;
 }
 
 /* 錯誤訊息的黑名單（已知的系統雜訊標籤） */
@@ -1174,7 +1253,13 @@ void samsung_finish(void)
     if (ss_panel[0]) {
         g_oled = 1;
         if (starts_with(ss_panel, "S6E") || strstr(ss_panel, "_AM") != NULL)
-            sprintf(g_panel_text, "三星顯示 Samsung Display (%s)", ss_panel);
+        {
+            const char *a = strstr(ss_panel, "_AM");
+            if (a != NULL && isalpha((unsigned char)a[3]) && isdigit((unsigned char)a[4]) && isdigit((unsigned char)a[5]) && isdigit((unsigned char)a[6]))
+                snprintf(g_panel_text, sizeof(g_panel_text), "三星顯示 Samsung Display，約 %c.%c%c 吋 (%s)", a[4], a[5], a[6], ss_panel);
+            else
+                sprintf(g_panel_text, "三星顯示 Samsung Display (%s)", ss_panel);
+        }
         else
             strcpy(g_panel_text, ss_panel);
     }
@@ -3463,7 +3548,10 @@ void page_parts(void)
     printf(" 指紋       %s\n", or_none(g_fp_text));
 
     for (i = 0; i < g_ncam; i++) {
+        const char *sp = camera_spec(g_cams[i]);
         printf(" %s %s %s\n", i == 0 ? "鏡頭      " : "          ", camera_maker(g_cams[i]), g_cams[i]);
+        if (sp != NULL) printf("              → %s\n", sp);
+        else            printf("              → 內建對照表沒有這個型號\n");
     }
 
     for (i = 0; i < g_ncharger; i++) {
@@ -3483,6 +3571,7 @@ void page_parts(void)
     if (g_wifi_chip[0]) printf(" Wi-Fi/藍牙 聯發科 %s%s\n", g_wifi_chip, g_wifi7 ? " (Wi-Fi 7)" : "");
     note("LPDDR 是記憶體規格、UFS 是儲存規格，數字越大越新越快；HS-G 是儲存傳輸的速度檔位");
     note("鏡頭顯示的是感光元件型號，報告只會記錄用過的鏡頭，可能不完整");
+    note("鏡頭的畫素和尺寸來自 App 內建的對照表，不用上網；感光元件尺寸越大（例如 1 吋比 1/2 吋大），暗的地方拍得越好");
 }
 
 void page_memory(void)
@@ -3807,21 +3896,32 @@ void ex_network_more(void)
 /* 零件頁的喇叭放大器 */
 void ex_amp_line(void)
 {
+    const char *d = NULL;
+    int n = 0;
     if (xa_chip[0]) {
         const char *maker = "";
-        int n = xa_naddr > xa_aw ? xa_naddr : xa_aw;
+        n = xa_naddr > xa_aw ? xa_naddr : xa_aw;
         if (starts_with(xa_chip, "CS")) maker = "Cirrus Logic";
         else if (starts_with(xa_chip, "AW")) maker = "艾為 Awinic";
         if (n >= 2) printf(" 喇叭放大器 %s%s%s x %d\n", maker, maker[0] ? " " : "", xa_chip, n);
         else        printf(" 喇叭放大器 %s%s%s\n", maker, maker[0] ? " " : "", xa_chip);
+        d = amp_desc(xa_chip);
     } else if (g_amp[0]) {
         const char *maker = "";
         if (starts_with(g_amp, "cs")) maker = "Cirrus Logic";
         else if (starts_with(g_amp, "aw")) maker = "艾為 Awinic";
         else if (starts_with(g_amp, "tfa")) maker = "NXP";
         printf(" 喇叭放大器 %s %s\n", maker, g_amp);
+        d = amp_desc(g_amp);
     }
-    if (xa_haptic[0]) printf(" 震動馬達   %s\n", xa_haptic);
+    if (d != NULL) printf("              → %s\n", d);
+    if (n >= 2) printf(" 喇叭       %d 個（每個喇叭一顆放大器）→ 立體聲\n", n);
+    if (xa_haptic[0]) {
+        printf(" 震動馬達   %s\n", xa_haptic);
+        if ((d = amp_desc(xa_haptic)) != NULL) printf("              → %s\n", d);
+    }
+    if (xa_chip[0] || g_amp[0])
+        note("報告裡只有放大器晶片的型號，喇叭本身的大小、瓦數沒有記錄；放大器數量通常等於喇叭數量");
 }
 
 /* 溫度頁 */
