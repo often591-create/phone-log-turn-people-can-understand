@@ -52,17 +52,19 @@ fun progressText(title: String, done: Double, total: Double, startMs: Long): Str
 }
 
 // 原始資料：遮掉常見的個人資料（Email、MAC、IMEI、SIM 卡號、手機號碼、座標、Wi-Fi 名稱、帳號）
-private val maskRules = listOf(
+// 用 by lazy：真的要遮資料時才建立，不會拖累其他畫面
+// 注意：Android 的正規表示式裡 [ 後面不能直接接 :，要寫成 \\:
+private val maskRules by lazy { listOf(
     Regex("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}") to "***@***",
-    Regex("(?<![0-9A-Fa-f:])([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f:])") to "XX:XX:XX:XX:XX:XX",
+    Regex("(?<![0-9A-Fa-f\\:])([0-9A-Fa-f]{2}[\\:\\-]){5}[0-9A-Fa-f]{2}(?![0-9A-Fa-f\\:])") to "XX:XX:XX:XX:XX:XX",
     Regex("(?<![\\d.])89\\d{17,18}(?![\\d.])") to "(SIM 卡號)",
     Regex("(?<![\\d.])\\d{15}(?![\\d.])") to "(序號)",
     Regex("(?<!\\d)(\\+?886|0)9\\d{2}[- ]?\\d{3}[- ]?\\d{3}(?!\\d)") to "(電話號碼)",
     Regex("\\+\\d{10,14}(?!\\d)") to "(電話號碼)",
     Regex("-?\\d{1,3}\\.\\d{4,}\\s*,\\s*-?\\d{1,3}\\.\\d{4,}") to "(座標)",
-    Regex("((?:B?SSID|ssid|wifiNetworkKey|networkName|mSsid)[:=] ?)\"[^\"]*\"") to "$1\"***\"",
+    Regex("((?:B?SSID|ssid|wifiNetworkKey|networkName|mSsid)[\\:=] ?)\"[^\"]*\"") to "$1\"***\"",
     Regex("(name=)[^,}\\]]*(, type=)") to "$1***$2"
-)
+) }
 
 // words：C 程式從報告裡找到的 Wi-Fi 名稱、裝置名稱（常含人名、地址），整個換成 ***
 fun maskPrivate(text: String, words: List<String>): String {
