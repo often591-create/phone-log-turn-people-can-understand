@@ -1,0 +1,49 @@
+name: 自動產生 APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            21
+            25
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: 產生 APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
+
+      - name: 整理檔名
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk phonelog-analyzer.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phonelog-analyzer-apk
+          path: phonelog-analyzer.apk
+
+      - name: 放到 Releases（最新版）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest phonelog-analyzer.apk \
+            --title "最新版 APK" \
+            --notes "每次更新程式碼後 GitHub 自動產生。下載 phonelog-analyzer.apk 直接安裝即可。（版本 ${GITHUB_SHA::7}）"

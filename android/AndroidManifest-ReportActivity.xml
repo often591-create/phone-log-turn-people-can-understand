@@ -1,6 +1,0 @@
-<!-- 加在 AndroidManifest.xml 的 </application> 上面 -->
-<activity
-    android:name=".ReportActivity"
-    android:process=":report"
-    android:exported="false"
-    android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden" />
